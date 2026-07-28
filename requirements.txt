@@ -1,9 +1,9 @@
-google-generativeai
+google-genai
 requests
 tenacity
 edge-tts
 moviepy==1.0.3
-pillow
+pillow==9.5.0
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
