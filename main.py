@@ -8,7 +8,8 @@ from video_renderer import render_final_video
 from youtube_uploader import schedule_video_upload
 
 def generate_single_short(video_index: int, auto_upload: bool = False):
-    print(f"\n{"=" * 20} GENERATING SHORT #{video_index + 1} {"=" * 20}")
+    divider = "=" * 20
+    print(f"\n{divider} GENERATING SHORT #{video_index + 1} {divider}")
 
     # Step 1: Research Unique Trending Topic
     topic = discover_trending_topic()
@@ -39,9 +40,9 @@ def generate_single_short(video_index: int, auto_upload: bool = False):
 
     print(f"[✓] Short #{video_index + 1} successfully created at: {final_video}")
 
-    # Step 6: Automatic YouTube Scheduling (Different Prime Hours: 6 AM, 12 PM, 6 PM EST)
+    # Step 6: Automatic YouTube Scheduling
     if auto_upload:
-        schedule_hours = [6, 12, 18] # সকাল ৬টা, দুপুর ১২টা, এবং সন্ধ্যা ৬টা
+        schedule_hours = [6, 12, 18] # US Prime Hours: 6 AM, 12 PM, 6 PM EST
         target_hour = schedule_hours[video_index % len(schedule_hours)]
         schedule_video_upload(final_video, script_data, target_hour_est=target_hour)
 
@@ -52,7 +53,6 @@ def main(total_videos: int = 3, auto_upload: bool = False):
 
     for i in range(total_videos):
         generate_single_short(video_index=i, auto_upload=auto_upload)
-        # API Rate Limit এড়ানোর জন্য ২০ সেকেন্ডের বিরতি
         if i < total_videos - 1:
             print("\n[⏳] Waiting 20 seconds before starting next video...")
             time.sleep(20)
@@ -60,6 +60,4 @@ def main(total_videos: int = 3, auto_upload: bool = False):
     print("\n🎉 ALL SHORTS GENERATED SUCCESSFULLY!")
 
 if __name__ == "__main__":
-    # total_videos = 3 দেওয়া আছে, অর্থাৎ ৩টি ভিডিও তৈরি করবে
     main(total_videos=3, auto_upload=False)
-
