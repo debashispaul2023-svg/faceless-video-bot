@@ -1,0 +1,37 @@
+name: Daily Automatic Video Generator & Publisher
+
+on:
+  schedule:
+    # প্রতিদিন ইউএস প্রাইম টাইমে অটোমেটিক রান হবে (Cron Job)
+    - cron: '0 10,16,22 * * *'
+  workflow_dispatch: # ম্যানুয়ালি টেস্ট করার জন্য
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install System Dependencies (FFmpeg)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg imagemagick
+
+    - name: Install Python Packages
+      run: |
+        pip install -r requirements.txt
+
+    - name: Run Auto Video Generator & Publisher
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      run: |
+        python main.py
+        
