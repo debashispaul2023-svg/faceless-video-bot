@@ -1,31 +1,22 @@
-from google import genai
-from google.genai import types
-import config
+import os
+import google.generativeai as genai
+
+# Configure Gemini API
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def discover_trending_topic() -> str:
-    """Uses Gemini 2.5 Flash with Search Grounding to find viral US topics in real-time."""
-    print("[+] Conducting real-time trend research via Gemini Search Grounding...")
-    
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
-    
-    prompt = (
-        "Search for currently viral, highly engaging, or surprising topics in the US right now "
-        "(focus on tech innovations, psychological facts, dark history, or high-stakes science). "
-        "Select ONE topic that works best for a 30-45 second faceless YouTube Short. "
-        "Return ONLY the topic title, nothing else."
-    )
-
+    """Generates a high-retention trending history/fact topic."""
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[{"google_search": {}}]  # Enable Google Search Grounding
-            )
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = (
+            "Give me one single specific, fascinating, and lesser-known historical fact "
+            "or real-world scientific discovery for a YouTube Short. Output ONLY the topic title in 1 short sentence."
         )
-        topic = response.text.strip().replace('"', '')
+        response = model.generate_content(prompt)
+        topic = response.text.strip()
         print(f"[+] Discovered Trending Topic: {topic}")
         return topic
     except Exception as e:
-        print(f"[!] Grounding Search failed ({e}). Falling back to niche evergreen prompt.")
-        return "Surprising Psychological Tricks People Use Daily Without Realizing It"
+        print(f"[!] Topic discovery failed ({e}), using default fallback.")
+        return "The Untold Story of Ancient Pyramid Engineering"
+
