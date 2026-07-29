@@ -18,11 +18,9 @@ def generate_script(topic_type="facts"):
     )
 
     try:
-        # Using current supported model
         model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         
-        # Clean response if wrapped in markdown codeblock
         raw_text = response.text.strip()
         if raw_text.startswith("```json"):
             raw_text = raw_text[7:-3].strip()
@@ -33,6 +31,9 @@ def generate_script(topic_type="facts"):
     except Exception as e:
         print(f"[!] Error in script generation: {e}")
         return get_fallback_script()
+
+def discover_trending_topic():
+    return generate_script()
 
 def get_fallback_script():
     return {
