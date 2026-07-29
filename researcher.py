@@ -1,6 +1,6 @@
 import os
 import json
-import google.generativeai as genai
+from google import genai
 
 def generate_script(topic_type="facts"):
     api_key = os.getenv("GEMINI_API_KEY")
@@ -8,38 +8,36 @@ def generate_script(topic_type="facts"):
         print("[!] GEMINI_API_KEY missing. Using fallback script.")
         return get_fallback_script()
 
-    genai.configure(api_key=api_key)
-    
-    prompt = (
-        "Generate a 30-second viral YouTube Short script about an astounding, lesser-known fact. "
-        "Return ONLY a valid JSON object with the following keys: "
-        "'title' (string), 'description' (string), 'script' (string, full narration), "
-        "'hashtags' (list of strings), 'visual_prompts' (list of 2 short visual descriptions for AI image generation)."
-    )
+    try:
+        # Google-এর একদম নতুন অফিশিয়াল Client (google-genai)
+        client = genai.Client(api_key=api_key)
+        
+        prompt = (
+            "Generate a 30-second viral YouTube Short script about an astounding, lesser-known fact. "
+            "Return ONLY a valid JSON object with the following keys: "
+            "'title' (string), 'description' (string), 'script' (string, full narration), "
+            "'hashtags' (list of strings), 'visual_prompts' (list of 2 short visual descriptions for AI image generation)."
+        )
 
-    # List of models to try in order
-    models_to_try = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-pro"]
-
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
+        # নতুন API-এর ফরম্যাট
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"):
+            raw_text = raw_text[7:-3].strip()
+        elif raw_text.startswith("```"):
+            raw_text = raw_text[3:-3].strip()
             
-            raw_text = response.text.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:-3].strip()
-            elif raw_text.startswith("```"):
-                raw_text = raw_text[3:-3].strip()
-                
-            return json.loads(raw_text)
-        except Exception as e:
-            print(f"[!] Error with {model_name}: {e}")
-            continue
-
-    print("[!] All Gemini models failed. Using fallback script.")
-    return get_fallback_script()
+        return json.loads(raw_text)
+    except Exception as e:
+        print(f"[!] Error in script generation: {e}")
+        return get_fallback_script()
 
 def discover_trending_topic():
+    # main.py যেন ফাংশনটি খুঁজে পায় তার জন্য এই অংশটি
     return generate_script()
 
 def get_fallback_script():
