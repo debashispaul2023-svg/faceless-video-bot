@@ -17,20 +17,27 @@ def generate_script(topic_type="facts"):
         "'hashtags' (list of strings), 'visual_prompts' (list of 2 short visual descriptions for AI image generation)."
     )
 
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        
-        raw_text = response.text.strip()
-        if raw_text.startswith("```json"):
-            raw_text = raw_text[7:-3].strip()
-        elif raw_text.startswith("```"):
-            raw_text = raw_text[3:-3].strip()
+    # List of models to try in order
+    models_to_try = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest", "gemini-pro"]
+
+    for model_name in models_to_try:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
             
-        return json.loads(raw_text)
-    except Exception as e:
-        print(f"[!] Error in script generation: {e}")
-        return get_fallback_script()
+            raw_text = response.text.strip()
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[7:-3].strip()
+            elif raw_text.startswith("```"):
+                raw_text = raw_text[3:-3].strip()
+                
+            return json.loads(raw_text)
+        except Exception as e:
+            print(f"[!] Error with {model_name}: {e}")
+            continue
+
+    print("[!] All Gemini models failed. Using fallback script.")
+    return get_fallback_script()
 
 def discover_trending_topic():
     return generate_script()
