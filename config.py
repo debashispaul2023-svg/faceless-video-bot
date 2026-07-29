@@ -9,10 +9,12 @@ OUTPUT_DIR = BASE_DIR / "output"
 ASSETS_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# API Keys and Secrets
-# "YOUR_GEMINI_API_KEY_HERE"-এর জায়গায় আপনার আসল Key-টি পেস্ট করুন
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6Lpkc0Y_RLZYCC5Lr7VoElCx2aLy6KuvGFrj0SNkdhH-Q")
-CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"
+# API Keys and Secrets (Fetched directly from GitHub Secrets)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
+YOUTUBE_REFRESH_TOKEN = os.getenv("YOUTUBE_REFRESH_TOKEN", "")
+YOUTUBE_CLIENT_ID = os.getenv("YOUTUBE_CLIENT_ID", "")
+YOUTUBE_CLIENT_SECRET = os.getenv("YOUTUBE_CLIENT_SECRET", "")
 
 # Voice Settings (Microsoft Edge Free Neural Voice)
 TTS_VOICE = "en-US-ChristopherNeural"
@@ -21,3 +23,4 @@ TTS_VOICE = "en-US-ChristopherNeural"
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
 FPS = 30
+
