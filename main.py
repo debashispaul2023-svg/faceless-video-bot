@@ -1,63 +1,56 @@
-import sys
 import time
-from researcher import discover_trending_topic
-from script_generator import generate_viral_script
-from tts_engine import generate_voiceover
-from visual_generator import generate_visual_assets
-from video_renderer import render_final_video
+import os
+from pathlib import Path
+from researcher import generate_script
+from voiceover import generate_voiceover
+from visualizer import generate_visuals
+from video_editor import assemble_video
 from youtube_uploader import schedule_video_upload
+import config
 
-def generate_single_short(video_index: int, auto_upload: bool = False):
-    divider = "=" * 20
-    print(f"\n{divider} GENERATING SHORT #{video_index + 1} {divider}")
+def process_single_short(index: int):
+    print(f"\n==================== GENERATING SHORT #{index + 1} ====================")
+    
+    # 1. স্ক্রিপ্ট জেনারেট
+    script_data = generate_script()
 
-    # Step 1: Research Unique Trending Topic
-    topic = discover_trending_topic()
+    # 2. ভয়েসওভার
+    audio_path = config.OUTPUT_DIR / f"voiceover_{index}.mp3"
+    generate_voiceover(script_data["script"], audio_path)
 
-    # Step 2: Generate Script & Visual Prompts
-    script_data = generate_viral_script(topic)
+    # 3. ছবি জেনারেট
+    images = generate_visuals(script_data.get("visual_prompts", []), index)
 
-    # Step 3: Text-To-Speech Synthesis
-    audio_path = generate_voiceover(
-        script_data["narration_text"], 
-        output_filename=f"voiceover_{video_index}.mp3"
-    )
+    # 4. ভিডিও এডিটিং
+    final_video_path = config.OUTPUT_DIR / f"final_short_{index + 1}.mp4"
+    assemble_video(audio_path, images, script_data["script"], final_video_path)
+    
+    print(f"[✓] Short #{index + 1} successfully created at: {final_video_path}")
 
-    # Step 4: AI Image Generation
-    images = generate_visual_assets(script_data["visual_scenes"])
+    # 5. ইউটিউবে আপলোড (এই অংশটিই মিসিং ছিল)
+    try:
+        print(f"[+] Starting YouTube upload for Short #{index + 1}...")
+        # ৩ ঘণ্টা পর পর শিডিউল আপলোড
+        target_hour = (12 + (index * 4)) % 24  
+        schedule_video_upload(final_video_path, script_data, target_hour_est=target_hour)
+        print(f"[✓] Upload process completed for Short #{index + 1}!")
+    except Exception as e:
+        print(f"[!] Upload failed for Short #{index + 1}: {e}")
 
-    if not images:
-        print(f"[!] Critical Error: Failed to generate images for Short #{video_index + 1}.")
-        return
+def main():
+    print("============================================================")
+    print("🎬 STARTING AUTOMATION PIPELINE FOR 3 SHORTS")
+    print("============================================================")
 
-    # Step 5: Video Assembly & Subtitle Rendering
-    final_video = render_final_video(
-        image_paths=images,
-        audio_path=audio_path,
-        narration_text=script_data["narration_text"],
-        output_filename=f"final_short_{video_index + 1}.mp4"
-    )
-
-    print(f"[✓] Short #{video_index + 1} successfully created at: {final_video}")
-
-    # Step 6: Automatic YouTube Scheduling
-    if auto_upload:
-        schedule_hours = [6, 12, 18] # US Prime Hours: 6 AM, 12 PM, 6 PM EST
-        target_hour = schedule_hours[video_index % len(schedule_hours)]
-        schedule_video_upload(final_video, script_data, target_hour_est=target_hour)
-
-def main(total_videos: int = 3, auto_upload: bool = False):
-    print("=" * 60)
-    print(f"🎬 STARTING AUTOMATION PIPELINE FOR {total_videos} SHORTS")
-    print("=" * 60)
-
-    for i in range(total_videos):
-        generate_single_short(video_index=i, auto_upload=auto_upload)
-        if i < total_videos - 1:
+    for i in range(3):
+        process_single_short(i)
+        if i < 2:
             print("\n[⏳] Waiting 20 seconds before starting next video...")
             time.sleep(20)
 
-    print("\n🎉 ALL SHORTS GENERATED SUCCESSFULLY!")
+    print("\n============================================================")
+    print("🎉 ALL SHORTS GENERATED AND UPLOADED SUCCESSFULLY!")
+    print("============================================================")
 
 if __name__ == "__main__":
-    main(total_videos=3, auto_upload=False)
+    main()
