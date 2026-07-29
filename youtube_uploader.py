@@ -1,19 +1,23 @@
+import os
 import datetime
 import pytz
 from pathlib import Path
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-import config
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 def authenticate_youtube():
-    flow = InstalledAppFlow.from_client_secrets_file(
-        str(config.CLIENT_SECRET_FILE), SCOPES
+    creds = Credentials(
+        token=None,
+        refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
+        client_id=os.environ["YOUTUBE_CLIENT_ID"],
+        client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=SCOPES
     )
-    credentials = flow.run_local_server(port=0)
-    return build("youtube", "v3", credentials=credentials)
+    return build("youtube", "v3", credentials=creds)
 
 def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int = 12):
     """Uploads video to YouTube and sets schedule time for peak EST hours."""
@@ -23,11 +27,11 @@ def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int
     # Calculate target hour in EST (US Audience)
     est_tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(est_tz)
-    
+
     scheduled_time = now.replace(hour=target_hour_est, minute=0, second=0, microsecond=0)
     if scheduled_time <= now:
         scheduled_time += datetime.timedelta(days=1)
-        
+
     publish_at_iso = scheduled_time.isoformat()
     clean_tags = [t.replace("#", "") for t in metadata.get("hashtags", ["shorts", "viral"])]
 
