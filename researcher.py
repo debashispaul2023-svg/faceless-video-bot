@@ -9,9 +9,8 @@ def generate_script(topic_type="facts"):
         return get_fallback_script()
 
     try:
-        # Google-এর একদম নতুন অফিশিয়াল Client (google-genai)
         client = genai.Client(api_key=api_key)
-        
+
         prompt = (
             "Generate a 30-second viral YouTube Short script about an astounding, lesser-known fact. "
             "Return ONLY a valid JSON object with the following keys: "
@@ -19,25 +18,23 @@ def generate_script(topic_type="facts"):
             "'hashtags' (list of strings), 'visual_prompts' (list of 2 short visual descriptions for AI image generation)."
         )
 
-        # নতুন API-এর ফরম্যাট
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.5-flash',
             contents=prompt,
         )
-        
+
         raw_text = response.text.strip()
         if raw_text.startswith("```json"):
             raw_text = raw_text[7:-3].strip()
         elif raw_text.startswith("```"):
             raw_text = raw_text[3:-3].strip()
-            
+
         return json.loads(raw_text)
     except Exception as e:
         print(f"[!] Error in script generation: {e}")
         return get_fallback_script()
 
 def discover_trending_topic():
-    # main.py যেন ফাংশনটি খুঁজে পায় তার জন্য এই অংশটি
     return generate_script()
 
 def get_fallback_script():
