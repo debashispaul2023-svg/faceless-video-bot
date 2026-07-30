@@ -1,6 +1,14 @@
 import os
 import json
 from google import genai
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
+def _call_gemini(client, prompt):
+    return client.models.generate_content(
+        model='gemini-3.5-flash',
+        contents=prompt,
+    )
 
 def generate_script(topic_type="facts"):
     api_key = os.getenv("GEMINI_API_KEY")
@@ -18,10 +26,7 @@ def generate_script(topic_type="facts"):
             "'hashtags' (list of strings), 'visual_prompts' (list of 2 short visual descriptions for AI image generation)."
         )
 
-        response = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=prompt,
-        )
+        response = _call_gemini(client, prompt)
 
         raw_text = response.text.strip()
         if raw_text.startswith("```json"):
