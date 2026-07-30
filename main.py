@@ -1,8 +1,4 @@
 import time
-import os
-from pathlib import Path
-import config
-
 from researcher import generate_script
 from tts_engine import generate_voiceover
 from visual_generator import generate_visual_assets
