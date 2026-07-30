@@ -3,6 +3,7 @@ import datetime
 import pytz
 from pathlib import Path
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
@@ -17,6 +18,7 @@ def authenticate_youtube():
         token_uri="https://oauth2.googleapis.com/token",
         scopes=SCOPES
     )
+    creds.refresh(Request())
     return build("youtube", "v3", credentials=creds)
 
 def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int = 12):
