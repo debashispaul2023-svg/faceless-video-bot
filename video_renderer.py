@@ -1,12 +1,11 @@
-import time
 import os
 from pathlib import Path
+from moviepy import VideoFileClip, AudioFileClip, ImageClip, TextClip, CompositeVideoClip, concatenate_videoclips
 import config
 
 from researcher import generate_script
 from tts_engine import generate_voiceover
 from visual_generator import generate_visual_assets
-from video_renderer import render_final_video
 from youtube_uploader import schedule_video_upload
 
 def process_single_short(index: int):
