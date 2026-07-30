@@ -1,46 +1,44 @@
 import time
 import os
 from pathlib import Path
-from researcher import generate_script
-from voiceover import generate_voiceover
-from visualizer import generate_visuals
-from video_editor import assemble_video
-from youtube_uploader import schedule_video_upload
 import config
+
+from researcher import generate_script
+from tts_engine import generate_voiceover
+from visual_generator import generate_visual_assets
+from video_renderer import render_final_video
+from youtube_uploader import schedule_video_upload
 
 def process_single_short(index: int):
     print(f"\n==================== GENERATING SHORT #{index + 1} ====================")
-    
-    # 1. স্ক্রিপ্ট জেনারেট
+
     script_data = generate_script()
 
-    # 2. ভয়েসওভার
-    audio_path = config.OUTPUT_DIR / f"voiceover_{index}.mp3"
-    generate_voiceover(script_data["script"], audio_path)
+    audio_path = generate_voiceover(script_data["script"], output_filename=f"voiceover_{index}.mp3")
 
-    # 3. ছবি জেনারেট
-    images = generate_visuals(script_data.get("visual_prompts", []), index)
+    images = generate_visual_assets(script_data.get("visual_prompts", []))
 
-    # 4. ভিডিও এডিটিং
-    final_video_path = config.OUTPUT_DIR / f"final_short_{index + 1}.mp4"
-    assemble_video(audio_path, images, script_data["script"], final_video_path)
-    
+    final_video_path = render_final_video(
+        image_paths=images,
+        audio_path=audio_path,
+        narration_text=script_data["script"],
+        output_filename=f"final_short_{index + 1}.mp4"
+    )
+
     print(f"[✓] Short #{index + 1} successfully created at: {final_video_path}")
 
-    # 5. ইউটিউবে আপলোড (এই অংশটিই মিসিং ছিল)
     try:
         print(f"[+] Starting YouTube upload for Short #{index + 1}...")
-        # ৩ ঘণ্টা পর পর শিডিউল আপলোড
-        target_hour = (12 + (index * 4)) % 24  
+        target_hour = (12 + (index * 4)) % 24
         schedule_video_upload(final_video_path, script_data, target_hour_est=target_hour)
         print(f"[✓] Upload process completed for Short #{index + 1}!")
     except Exception as e:
         print(f"[!] Upload failed for Short #{index + 1}: {e}")
 
 def main():
-    print("============================================================")
+    print("=" * 60)
     print("🎬 STARTING AUTOMATION PIPELINE FOR 3 SHORTS")
-    print("============================================================")
+    print("=" * 60)
 
     for i in range(3):
         process_single_short(i)
@@ -48,9 +46,9 @@ def main():
             print("\n[⏳] Waiting 20 seconds before starting next video...")
             time.sleep(20)
 
-    print("\n============================================================")
+    print("\n" + "=" * 60)
     print("🎉 ALL SHORTS GENERATED AND UPLOADED SUCCESSFULLY!")
-    print("============================================================")
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
