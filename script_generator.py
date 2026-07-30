@@ -6,7 +6,7 @@ import google.generativeai as genai
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def generate_viral_script(topic: str) -> dict:
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = genai.GenerativeModel('gemini-3.5-flash')
 
     prompt = f"""
     You are an expert YouTube Shorts creator specializing in "Mind-Blowing History & Real World Facts".
