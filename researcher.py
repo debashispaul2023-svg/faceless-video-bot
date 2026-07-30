@@ -1,6 +1,7 @@
 import os
 import json
 from google import genai
+from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
@@ -8,6 +9,9 @@ def _call_gemini(client, prompt):
     return client.models.generate_content(
         model='gemini-3.5-flash',
         contents=prompt,
+        config=types.GenerateContentConfig(
+            http_options=types.HttpOptions(timeout=30000)  # 30 second timeout
+        )
     )
 
 def generate_script(topic_type="facts"):
