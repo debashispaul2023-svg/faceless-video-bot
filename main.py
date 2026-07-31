@@ -12,7 +12,7 @@ def process_single_short(index: int):
 
     audio_path = generate_voiceover(script_data["script"], output_filename=f"voiceover_{index}.mp3")
 
-    images = generate_visual_assets(script_data.get("visual_prompts", []))
+    images = generate_visual_assets(script_data.get("visual_scenes", []))
 
     final_video_path = render_final_video(
         image_paths=images,
