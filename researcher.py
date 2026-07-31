@@ -85,7 +85,7 @@ _FALLBACK_SCRIPTS = [
         "title": "The Power of Compound Interest Explained!",
         "category": "financial independence and retirement planning",
         "description": "Make your money multiply automatically! #shorts #wealth",
-        "script": "Albert Einstein called compound interest the eighth wonder of the world. If you start investing just one hundred dollars a month in your twenties, you will end up a millionaire by retirement thanks to exponential growth. Time in the market always beats timing the market. The best day to start investing was ten years ago; the second best day is today.",
+        "script": "Albert Einstein called compound interest the eighth wonder of the world. If you start investing just one hundred dollars a month in your twenties, that money could grow into a life-changing amount by retirement thanks to exponential growth. Time in the market always beats timing the market. The best day to start investing was ten years ago; the second best day is today.",
         "hashtags": ["shorts", "finance", "investing", "wealthbuilding"],
         "visual_scenes": [
             {"search_query": "hourglass running sand", "ai_prompt": "close up of an hourglass measuring time passing by, cinematic, 9:16 vertical"},
@@ -177,7 +177,12 @@ def generate_script(topic_type="facts"):
             "- Open with a scroll-stopping hook in the first sentence (a bold claim, a shocking number, or "
             "a 'you've been lied to about X' style line) — not a slow intro.\n"
             "- Keep the narration conversational and energetic, like you're telling a friend something wild.\n"
-            "- End with a punchy closing line or a reason to keep watching/follow.\n\n"
+            "- End with a punchy closing line or a reason to keep watching/follow.\n"
+            "- COMPLIANCE (strict, this is financial content): NEVER recommend a specific stock, crypto coin, "
+            "or investment product; NEVER promise or imply a guaranteed return or a specific dollar/wealth "
+            "outcome (e.g. 'you will become a millionaire', 'guaranteed profit'); keep everything general and "
+            "educational, framed as 'here's how X works', never 'here's what to buy'; if the fact could be "
+            "read as advice, phrase it as general education, not a personal recommendation.\n\n"
             "Return ONLY a valid JSON object with the following keys: "
             "'title' (string), 'description' (string), 'script' (string, full narration), "
             "'hashtags' (list of strings), "
