@@ -23,4 +23,3 @@ TTS_VOICE = "en-US-ChristopherNeural"
 VIDEO_WIDTH = 1080
 VIDEO_HEIGHT = 1920
 FPS = 30
-
