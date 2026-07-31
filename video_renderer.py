@@ -1,10 +1,13 @@
 import os
+import json
 import random
 import traceback
 from pathlib import Path
+from PIL import ImageFont
 from moviepy import (
     VideoFileClip, AudioFileClip, ImageClip, TextClip,
-    CompositeVideoClip, concatenate_videoclips, vfx
+    CompositeVideoClip, CompositeAudioClip, concatenate_videoclips,
+    concatenate_audioclips, vfx, afx
 )
 import config
 
@@ -25,6 +28,8 @@ _FONT_CANDIDATES = [
 _CROSSFADE_DURATION = 0.4
 # How much an image "grows" over its on-screen duration for the Ken Burns effect.
 _KEN_BURNS_ZOOM = 0.12
+_CAPTION_FONT_SIZE = 70
+_CAPTION_CHUNK_SIZE = 3  # words shown on screen together, with one highlighted at a time
 
 
 def _resolve_font_path() -> str:
@@ -37,41 +42,134 @@ def _resolve_font_path() -> str:
     )
 
 
-def _build_captions(narration_text: str, total_duration: float):
-    """Builds word-chunked, Hormozi-style bold captions synced to audio duration."""
+def _load_word_timings(audio_path: Path):
+    """Loads the real per-word timings tts_engine.py saves alongside the
+    audio file, if present. Returns None if not available (caller falls
+    back to an even-split estimate)."""
+    sidecar = Path(audio_path).with_suffix(".words.json")
+    try:
+        if sidecar.is_file():
+            data = json.loads(sidecar.read_text())
+            if data:
+                return data
+    except Exception as e:
+        print(f"[!] Could not read word-timing sidecar ({e}); using even-split captions.")
+    return None
+
+
+def _build_captions(narration_text: str, total_duration: float, audio_path: Path):
+    """
+    Builds karaoke-style captions: a few words are shown on screen together
+    (in white), and the specific word being spoken right now is highlighted
+    in yellow — just like popular Shorts/Reels captions.
+
+    Uses REAL per-word timing from edge-tts's WordBoundary events when
+    available (see tts_engine.py); otherwise falls back to splitting the
+    total duration evenly across words, which is close enough to still look
+    good but won't be frame-perfect.
+    """
     words = narration_text.split()
     if not words:
         return []
 
     font_path = _resolve_font_path()
+    font = ImageFont.truetype(font_path, _CAPTION_FONT_SIZE)
+    space_w = font.getlength(" ")
 
-    chunk_size = 3
-    num_chunks = max(1, len(words) // chunk_size)
-    chunk_duration = total_duration / num_chunks
+    timings = _load_word_timings(audio_path)
+    if timings and len(timings) >= len(words) * 0.6:
+        # Good enough real timing data — use it directly (trusts edge-tts's
+        # own word segmentation rather than forcing it to match `words`).
+        word_times = [(t.get("text", "").strip() or "", t["start"], t["end"]) for t in timings]
+    else:
+        # Fallback: spread words evenly across the narration's duration.
+        per_word = total_duration / len(words)
+        word_times = [(w, i * per_word, (i + 1) * per_word) for i, w in enumerate(words)]
 
-    sub_clips = []
-    for i in range(0, len(words), chunk_size):
-        chunk_text = " ".join(words[i:i + chunk_size]).upper()
-        start_time = (i // chunk_size) * chunk_duration
+    clips = []
+    y_pos = 1350
 
-        txt_clip = (
+    for chunk_start_idx in range(0, len(word_times), _CAPTION_CHUNK_SIZE):
+        chunk = word_times[chunk_start_idx: chunk_start_idx + _CAPTION_CHUNK_SIZE]
+        if not chunk:
+            continue
+
+        chunk_words_upper = [w.upper() for (w, _, _) in chunk]
+        widths = [font.getlength(w) for w in chunk_words_upper]
+        total_w = sum(widths) + space_w * max(0, len(chunk) - 1)
+        start_x = (config.VIDEO_WIDTH - total_w) / 2
+
+        chunk_start_time = chunk[0][1]
+        chunk_end_time = chunk[-1][2]
+        chunk_duration = max(0.05, chunk_end_time - chunk_start_time)
+
+        # Base layer: the whole chunk, visible in white for its full duration.
+        base_text = " ".join(chunk_words_upper)
+        base_clip = (
             TextClip(
-                font=font_path,
-                text=chunk_text,
-                font_size=70,
-                color='yellow',
-                stroke_color='black',
-                stroke_width=4,
-                method='caption',
-                size=(config.VIDEO_WIDTH - 120, None)
+                font=font_path, text=base_text, font_size=_CAPTION_FONT_SIZE,
+                color='white', stroke_color='black', stroke_width=4,
+                method='label'
             )
-            .with_position(('center', 1350))
-            .with_start(start_time)
+            .with_position((start_x, y_pos))
+            .with_start(chunk_start_time)
             .with_duration(chunk_duration)
         )
-        sub_clips.append(txt_clip)
+        clips.append(base_clip)
 
-    return sub_clips
+        # Highlight layer: each word, in yellow, ONLY during its own slice —
+        # sits on top of (and visually replaces) the white word beneath it.
+        cursor_x = start_x
+        for (word, w_start, w_end), width in zip(chunk, widths):
+            if not word:
+                cursor_x += width + space_w
+                continue
+            highlight_clip = (
+                TextClip(
+                    font=font_path, text=word.upper(), font_size=_CAPTION_FONT_SIZE,
+                    color='yellow', stroke_color='black', stroke_width=4,
+                    method='label'
+                )
+                .with_position((cursor_x, y_pos))
+                .with_start(w_start)
+                .with_duration(max(0.05, w_end - w_start))
+            )
+            clips.append(highlight_clip)
+            cursor_x += width + space_w
+
+    return clips
+
+
+def _pick_background_music(duration: float):
+    """
+    Picks a random track from assets/music/, loops/trims it to match the
+    video's duration, and turns its volume down so it sits under the
+    narration instead of competing with it. Returns None (silently) if no
+    music files are available — BGM is a nice-to-have, never a hard
+    requirement, so its absence must never break rendering.
+    """
+    tracks = list(config.MUSIC_DIR.glob("*.mp3")) + list(config.MUSIC_DIR.glob("*.wav"))
+    if not tracks:
+        print(f"[i] No background music files found in {config.MUSIC_DIR} — skipping BGM. "
+              f"Drop a few royalty-free .mp3 tracks there (e.g. from the YouTube Audio Library "
+              f"or Pixabay Music) to enable this.")
+        return None
+
+    track_path = random.choice(tracks)
+    try:
+        music = AudioFileClip(str(track_path))
+        if music.duration < duration:
+            loops_needed = int(duration // music.duration) + 1
+            music.close()
+            music = concatenate_audioclips([AudioFileClip(str(track_path)) for _ in range(loops_needed)])
+        music = music.subclipped(0, duration)
+        music = music.with_effects([afx.MultiplyVolume(config.BGM_VOLUME)])
+        print(f"[+] Added background music: {track_path.name}")
+        return music
+    except Exception as e:
+        print(f"[!] Failed to load background music ({e}); continuing without it.")
+        traceback.print_exc()
+        return None
 
 
 def _cover_resize_and_crop(clip, target_w: int, target_h: int):
@@ -160,15 +258,17 @@ def _apply_crossfades(clips: list, crossfade_duration: float):
 def render_final_video(image_paths: list, audio_path: Path, narration_text: str, output_filename: str) -> Path:
     """
     Renders the final video: real stock video clips play as-is, still images
-    get a Ken Burns zoom, scenes cross-fade into each other, and word-synced
-    subtitles are burned in on top.
+    get a Ken Burns zoom, scenes cross-fade into each other, karaoke-style
+    word-highlighted subtitles are burned in on top, and background music
+    (if any .mp3/.wav files exist in assets/music/) is mixed under the
+    narration.
 
     `image_paths` accepts either:
       - a list of dicts: {"path": Path, "type": "video" | "image"}  (preferred,
         matches the stock-first visual_generator.py output), or
       - a plain list of image Paths (for backward compatibility).
     """
-    print("[+] Assembling video with MoviePy (Ken Burns + crossfades)...")
+    print("[+] Assembling video with MoviePy (Ken Burns + crossfades + BGM + karaoke captions)...")
 
     assets = []
     for item in image_paths:
@@ -180,10 +280,10 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     if not assets:
         raise ValueError("render_final_video received no visual assets to work with.")
 
-    audio_clip = AudioFileClip(str(audio_path))
+    narration_clip = AudioFileClip(str(audio_path))
     # A touch of extra time per scene so the crossfade overlap doesn't eat
     # into the narration timing.
-    duration_per_asset = audio_clip.duration / len(assets) + _CROSSFADE_DURATION
+    duration_per_asset = narration_clip.duration / len(assets) + _CROSSFADE_DURATION
 
     clips = []
     for asset in assets:
@@ -198,7 +298,7 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
         raise RuntimeError("All visual assets failed to load; cannot render video.")
 
     if len(clips) != len(assets):
-        duration_per_asset = audio_clip.duration / len(clips) + _CROSSFADE_DURATION
+        duration_per_asset = narration_clip.duration / len(clips) + _CROSSFADE_DURATION
         clips = [c.with_duration(duration_per_asset) for c in clips]
 
     try:
@@ -210,11 +310,24 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
 
     # Trim back down to exactly the narration length (the crossfade padding
     # above can leave the video a hair longer than the audio).
-    video_clip = video_clip.subclipped(0, audio_clip.duration)
-    video_with_audio = video_clip.with_audio(audio_clip)
+    video_clip = video_clip.subclipped(0, narration_clip.duration)
+
+    # --- Audio: mix narration (full volume) with background music (quiet) ---
+    bgm_clip = _pick_background_music(narration_clip.duration)
+    if bgm_clip is not None:
+        try:
+            final_audio = CompositeAudioClip([narration_clip, bgm_clip])
+        except Exception as e:
+            print(f"[!] Mixing background music failed ({e}); using narration only.")
+            traceback.print_exc()
+            final_audio = narration_clip
+    else:
+        final_audio = narration_clip
+
+    video_with_audio = video_clip.with_audio(final_audio)
 
     try:
-        captions = _build_captions(narration_text, audio_clip.duration)
+        captions = _build_captions(narration_text, narration_clip.duration, audio_path)
         if captions:
             final_clip = CompositeVideoClip([video_with_audio] + captions)
         else:
@@ -242,8 +355,9 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
             audio_codec="aac"
         )
 
-    audio_clip.close()
+    narration_clip.close()
     final_clip.close()
 
     print(f"[✓] Render completed: {output_path}")
     return output_path
+            
