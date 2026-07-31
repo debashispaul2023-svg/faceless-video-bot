@@ -138,15 +138,34 @@ def _remember_title(title: str):
         pass  # never let history bookkeeping break the pipeline
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=8))
-def _call_gemini(client, prompt):
+@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=4, max=30))
+def _call_gemini_single_model(client, prompt, model_name):
     return client.models.generate_content(
-        model='gemini-3.5-flash',
+        model=model_name,
         contents=prompt,
         config=types.GenerateContentConfig(
             http_options=types.HttpOptions(timeout=30000)  # 30 second timeout
         )
     )
+
+
+# If the primary model is overloaded (Google returns 503 UNAVAILABLE /
+# "high demand" — this is NOT a quota or key problem, just that specific
+# model being busy), fall through to trying other Gemini models before
+# giving up and using the local fallback script.
+_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+
+
+def _call_gemini(client, prompt):
+    last_error = None
+    for model_name in _MODEL_FALLBACK_CHAIN:
+        try:
+            return _call_gemini_single_model(client, prompt, model_name)
+        except Exception as e:
+            print(f"[!] Model '{model_name}' failed (likely overloaded/503, or truly unavailable): {e}")
+            last_error = e
+            continue
+    raise last_error
 
 
 def generate_script(topic_type="facts"):
