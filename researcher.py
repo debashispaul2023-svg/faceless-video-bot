@@ -30,6 +30,7 @@ _TOPIC_CATEGORIES = [
 _FALLBACK_SCRIPTS = [
     {
         "title": "Mind-Blowing Space Fact You Didn't Know!",
+        "category": "outer space and astronomy",
         "description": "Discover incredible facts about planet Jupiter! #shorts #facts",
         "script": "You've been lied to about Jupiter. This planet is so massive, every other planet in our solar system could fit inside it. It has a storm called the Great Red Spot, and that storm alone is bigger than Earth. It's been raging for over 350 years straight. Scientists still don't fully know why it hasn't stopped. Space is way weirder than we think.",
         "hashtags": ["shorts", "facts", "space", "science"],
@@ -43,6 +44,7 @@ _FALLBACK_SCRIPTS = [
     },
     {
         "title": "This Ocean Fact Will Terrify You!",
+        "category": "deep ocean and marine life",
         "description": "We know more about the moon than our own oceans. #shorts #facts",
         "script": "We've mapped the surface of Mars better than our own ocean floor. Humans have explored less than 5 percent of Earth's oceans. That means 95 percent of our own planet is still a total mystery. Down there, in the crushing dark, are creatures no human has ever seen alive. It's terrifying how little we actually know about our own world.",
         "hashtags": ["shorts", "facts", "ocean", "science"],
@@ -56,6 +58,7 @@ _FALLBACK_SCRIPTS = [
     },
     {
         "title": "Your Brain Does THIS Every Night!",
+        "category": "the human body and brain",
         "description": "The human brain is stranger than you think. #shorts #facts",
         "script": "Your brain is quietly shrinking, right now, every single day. It only fully resets while you sleep. Skip a night of sleep and brain tissue can physically shrink from the stress. Your brain literally cleans itself while you're unconscious, flushing out toxins that build up during the day. Sleep isn't optional. It's maintenance.",
         "hashtags": ["shorts", "facts", "brain", "science"],
@@ -69,6 +72,7 @@ _FALLBACK_SCRIPTS = [
     },
     {
         "title": "This Ancient City Vanished Overnight!",
+        "category": "ancient history and lost civilizations",
         "description": "History hides some incredible mysteries. #shorts #facts",
         "script": "In the year 79 AD, an entire city vanished in seconds. Pompeii was buried under volcanic ash so fast, it froze everyday life exactly as it happened. Bread was still in ovens. People were caught mid-step. Nearly two thousand years later, we're still uncovering exactly what that final morning looked like. It's one of history's most haunting time capsules.",
         "hashtags": ["shorts", "facts", "history", "ancient"],
@@ -82,6 +86,7 @@ _FALLBACK_SCRIPTS = [
     },
     {
         "title": "Animals Are Smarter Than You Think!",
+        "category": "animals and wildlife behavior",
         "description": "The animal kingdom hides shocking secrets. #shorts #facts",
         "script": "Octopuses have three hearts and blue blood. That's not even the strange part. Two of those hearts literally stop beating every single time they swim. They can taste with their arms, squeeze through a gap the size of a coin, and solve puzzles better than most house pets. The ocean is hiding one of the strangest minds on the planet.",
         "hashtags": ["shorts", "facts", "animals", "nature"],
@@ -101,6 +106,28 @@ def _load_used_titles() -> list:
         return json.loads(_HISTORY_FILE.read_text()).get("titles", [])
     except Exception:
         return []
+
+
+_CATEGORY_SCORES_FILE = Path(__file__).resolve().parent / "assets" / "category_scores.json"
+
+
+def _choose_category() -> str:
+    """
+    Picks a topic category, weighted by past performance if the analytics
+    feedback loop (analytics_feedback.py) has written any scores yet.
+    Categories with no data default to a neutral weight, so everything still
+    gets explored — this never turns into "always pick the one winner."
+    """
+    try:
+        scores = json.loads(_CATEGORY_SCORES_FILE.read_text())
+    except Exception:
+        scores = {}
+
+    if not scores:
+        return random.choice(_TOPIC_CATEGORIES)
+
+    weights = [max(scores.get(cat, 1.0), 0.1) for cat in _TOPIC_CATEGORIES]
+    return random.choices(_TOPIC_CATEGORIES, weights=weights, k=1)[0]
 
 
 def _remember_title(title: str):
@@ -133,7 +160,7 @@ def generate_script(topic_type="facts"):
         return get_fallback_script()
 
     used_titles = _load_used_titles()
-    category = random.choice(_TOPIC_CATEGORIES)
+    category = _choose_category()
 
     try:
         client = genai.Client(api_key=api_key)
@@ -174,6 +201,7 @@ def generate_script(topic_type="facts"):
             raw_text = raw_text[3:-3].strip()
 
         result = json.loads(raw_text)
+        result["category"] = category
         _remember_title(result.get("title", ""))
         return result
     except Exception as e:
