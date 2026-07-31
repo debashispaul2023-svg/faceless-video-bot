@@ -13,15 +13,11 @@ _HISTORY_FILE = Path(__file__).resolve().parent / "assets" / "used_topics.json"
 
 _TOPIC_CATEGORIES = [
     "outer space and astronomy",
-    "deep ocean and marine life",
-    "the human body and brain",
-    "ancient history and lost civilizations",
-    "psychology and how the mind works",
-    "technology and inventions",
-    "animals and wildlife behavior",
-    "geography and natural wonders",
+    "universe mysteries and astrophysics",
+    "fascinating science facts and physics",
+    "quantum mechanics and cosmic phenomena",
+    "deep space discoveries and planetary science"
 ]
-
 # A pool of varied fallback scripts (used only if Gemini is unreachable),
 # so a bad API key doesn't make every single video identical.
 # Each scene now carries BOTH a `search_query` (1-2 broad words, for the
