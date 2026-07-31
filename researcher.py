@@ -213,9 +213,7 @@ def discover_trending_topic():
 
 def get_fallback_script():
     used_titles = _load_used_titles()
-    # Prefer a fallback we haven't used recently, so a bad API key doesn't
-    # produce 3 identical shorts in the same run (or every day after).
-    unused = [s for s in _FALLBACK_SCRIPTS if s["title"] not in used_titles[-len(_FALLBACK_SCRIPTS):]]
+    unused = [s for s in _FALLBACK_SCRIPTS if s["title"] not in used_titles]
     choice = random.choice(unused or _FALLBACK_SCRIPTS)
     _remember_title(choice["title"])
     return choice
