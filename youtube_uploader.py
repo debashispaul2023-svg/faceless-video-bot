@@ -21,8 +21,13 @@ def authenticate_youtube():
     creds.refresh(Request())
     return build("youtube", "v3", credentials=creds)
 
-def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int = 12):
-    """Uploads video to YouTube and sets schedule time for peak EST hours."""
+def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int = 12, day_offset: int = 0):
+    """Uploads video to YouTube and sets schedule time for peak EST hours.
+
+    day_offset lets overflow videos (4th, 5th, 6th... in a batch) roll over
+    to the next day's slot instead of colliding with an earlier video that
+    already claimed that same hour today.
+    """
     print("[+] Initiating YouTube OAuth authentication...")
     youtube = authenticate_youtube()
 
@@ -30,8 +35,14 @@ def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int
     est_tz = pytz.timezone('US/Eastern')
     now = datetime.datetime.now(est_tz)
 
-    scheduled_time = now.replace(hour=target_hour_est, minute=0, second=0, microsecond=0)
-    if scheduled_time <= now:
+    scheduled_time = (now + datetime.timedelta(days=day_offset)).replace(
+        hour=target_hour_est, minute=0, second=0, microsecond=0
+    )
+    # The "already passed today, push to tomorrow" safety check only makes
+    # sense for same-day slots (day_offset == 0). Overflow videos already
+    # have an explicit future day baked in via day_offset, so re-checking
+    # against "now" here would double-shift them.
+    if day_offset == 0 and scheduled_time <= now:
         scheduled_time += datetime.timedelta(days=1)
 
     publish_at_iso = scheduled_time.isoformat()
