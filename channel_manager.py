@@ -31,6 +31,39 @@ Requires the SAME extra OAuth scope as analytics_feedback.py
 (yt-analytics.readonly) — see that file's docstring for the one-time setup.
 """
 
+"""
+AI Channel Manager.
+
+Runs as a SEPARATE, once-a-day check (not on every video-generation run —
+see the workflow note at the bottom of this file) and does three things:
+
+  1. Detects "stuck" schedules: a video that was scheduled to go public at
+     some past time but is STILL sitting private (a scheduling failure on
+     YouTube's side, or a bug in our own code) — and publishes it
+     immediately so it doesn't sit invisible forever.
+
+  2. Detects underperforming videos (published 48h+ ago, views well below
+     the channel's own recent median) and uses Gemini to rewrite a punchier
+     title/description, then updates it on YouTube.
+
+  3. Checks whether the pipeline has gone quiet (no successful upload in the
+     last ~36 hours) and prints a clear warning in the Actions log — this is
+     as close to "keep the channel from going dormant" as code run once a
+     day CAN safely do; it cannot fix a broken Actions schedule by itself,
+     but it makes the problem visible instead of silent.
+
+═══════════════════════════════════════════════════════════════════════
+SAFETY: DRY-RUN BY DEFAULT
+═══════════════════════════════════════════════════════════════════════
+This script only LOGS what it would change unless the environment variable
+CHANNEL_MANAGER_APPLY_CHANGES is set to "true". Live-editing a real
+channel's titles/descriptions is not something that should run unattended
+and unreviewed on day one — watch a few dry-run logs first, then flip it on.
+
+Requires the SAME extra OAuth scope as analytics_feedback.py
+(yt-analytics.readonly) — see that file's docstring for the one-time setup.
+"""
+
 import os
 import json
 import traceback
@@ -135,8 +168,8 @@ def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: st
             "and more click-worthy WITHOUT being clickbait-misleading and WITHOUT making any "
             "financial promises or recommending specific investments (keep it educational, "
             "compliant, general). Return ONLY valid JSON: "
-            '{"title": "...", "description": "..."}\\n\\n'
-            f"Current title: {old_title}\\nCurrent description: {old_description}"
+            '{"title": "...", "description": "..."}\n\n'
+            f"Current title: {old_title}\nCurrent description: {old_description}"
         )
         response = gemini_client.models.generate_content(model="gemini-3.5-flash", contents=prompt)
         raw = response.text.strip()
