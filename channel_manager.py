@@ -135,8 +135,8 @@ def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: st
             "and more click-worthy WITHOUT being clickbait-misleading and WITHOUT making any "
             "financial promises or recommending specific investments (keep it educational, "
             "compliant, general). Return ONLY valid JSON: "
-            '{"title": "...", "description": "..."}\n\n'
-            f"Current title: {old_title}\nCurrent description: {old_description}"
+            '{"title": "...", "description": "..."}\\n\\n'
+            f"Current title: {old_title}\\nCurrent description: {old_description}"
         )
         response = gemini_client.models.generate_content(model="gemini-3.5-flash", contents=prompt)
         raw = response.text.strip()
