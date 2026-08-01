@@ -1,11 +1,11 @@
 import os
 import json
 import random
+import time
 import traceback
 from pathlib import Path
 from google import genai
 from google.genai import types
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Where we remember which titles we've already used, so we stop repeating
 # ourselves both within a single run (3 shorts) and across days.
@@ -138,15 +138,52 @@ def _remember_title(title: str):
         pass  # never let history bookkeeping break the pipeline
 
 
-@retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=4, max=30))
+def _is_quota_exhausted(e: Exception) -> bool:
+    """
+    A 429 RESOURCE_EXHAUSTED error means this model's quota is genuinely
+    used up (sometimes permanently, e.g. 'limit: 0' on the free tier for
+    that specific model) — retrying the SAME model won't help, it just
+    burns time. We detect this defensively (attribute OR message text,
+    since we can't rely on one specific SDK version's exact error shape).
+    """
+    code = getattr(e, "code", None) or getattr(e, "status_code", None)
+    msg = str(e)
+    return code == 429 or "RESOURCE_EXHAUSTED" in msg or " 429 " in f" {msg} "
+
+
 def _call_gemini_single_model(client, prompt, model_name):
-    return client.models.generate_content(
-        model=model_name,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            http_options=types.HttpOptions(timeout=30000)  # 30 second timeout
-        )
-    )
+    """
+    Tries one model. Quota-exhausted (429) errors fail IMMEDIATELY (no
+    point retrying the same over-quota model). Everything else (timeouts,
+    503 'model overloaded', transient network errors) gets a short
+    exponential backoff retry before giving up on this model.
+    """
+    max_attempts = 3
+    delay = 4
+    last_err = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    http_options=types.HttpOptions(timeout=30000)  # 30 second timeout
+                )
+            )
+        except Exception as e:
+            if _is_quota_exhausted(e):
+                print(f"[!] Model '{model_name}' quota exhausted — skipping straight to the "
+                      f"next model instead of wasting time retrying it.")
+                raise
+            last_err = e
+            if attempt < max_attempts:
+                print(f"[!] Model '{model_name}' attempt {attempt}/{max_attempts} failed "
+                      f"({e}); retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+
+    raise last_err
 
 
 # If the primary model is overloaded (Google returns 503 UNAVAILABLE /
@@ -165,6 +202,12 @@ def _call_gemini(client, prompt):
             print(f"[!] Model '{model_name}' failed (likely overloaded/503, or truly unavailable): {e}")
             last_error = e
             continue
+
+    if _is_quota_exhausted(last_error):
+        print("[!] ALL models hit quota limits (limit: 0 on the free tier usually means the "
+              "project behind this API key needs attention — check billing/quota status at "
+              "https://ai.dev/rate-limit, or generate a fresh key at "
+              "https://aistudio.google.com/apikey under a different Google Cloud project).")
     raise last_error
 
 

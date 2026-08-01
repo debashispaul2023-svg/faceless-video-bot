@@ -11,10 +11,11 @@ import analytics_feedback
 
 def get_sequential_slot_est(index: int):
     """
-    Maps video index sequentially to US Prime Time slots, and returns
-    BOTH the target hour AND how many days ahead it should be scheduled.
-    This is what makes overflow videos (4th, 5th, 6th...) roll over to
-    the next day instead of colliding with today's already-used slots.
+    Maps video index sequentially to US Prime Time slots, and returns the
+    target hour, target minute, AND how many days ahead it should be
+    scheduled. This is what makes overflow videos (4th, 5th, 6th...) roll
+    over to the next day instead of colliding with today's already-used
+    slots.
 
     Slots (EST/EDT equivalent to IST 5:00 PM, 10:30 PM, and 3:00 AM next day):
     1. 7:30 AM EDT (5:00 PM IST)
@@ -22,16 +23,16 @@ def get_sequential_slot_est(index: int):
     3. 5:30 PM EDT (3:00 AM IST next day)
     """
     slot_pattern = [
-        7,   # ~7:30 AM EDT (5:00 PM IST)
-        13,  # 1:00 PM EDT (10:30 PM IST)
-        17,  # ~5:30 PM EDT (3:00 AM IST next day)
+        (7, 30),   # 7:30 AM EDT (5:00 PM IST)
+        (13, 0),   # 1:00 PM EDT (10:30 PM IST)
+        (17, 30),  # 5:30 PM EDT (3:00 AM IST next day)
     ]
 
     pattern_index = index % len(slot_pattern)
     day_offset = index // len(slot_pattern)   # 0,0,0 -> 1,1,1 -> 2,2,2 ...
 
-    target_hour = slot_pattern[pattern_index]
-    return target_hour, day_offset
+    target_hour, target_minute = slot_pattern[pattern_index]
+    return target_hour, target_minute, day_offset
 
 
 def process_single_short(index: int):
@@ -54,15 +55,16 @@ def process_single_short(index: int):
 
     try:
         print(f"[+] Starting YouTube upload for Short #{index + 1}...")
-        target_hour, day_offset = get_sequential_slot_est(index)
+        target_hour, target_minute, day_offset = get_sequential_slot_est(index)
         video_id = schedule_video_upload(
             final_video_path,
             script_data,
             target_hour_est=target_hour,
+            target_minute_est=target_minute,
             day_offset=day_offset
         )
         print(f"[✓] Upload process completed for Short #{index + 1} "
-              f"at EST hour {target_hour} (day +{day_offset})!")
+              f"at EST hour {target_hour}:{target_minute:02d} (day +{day_offset})!")
 
         # Best-effort: remember which category this video came from, so the
         # analytics feedback loop can later correlate performance to topic.

@@ -21,8 +21,13 @@ def authenticate_youtube():
     creds.refresh(Request())
     return build("youtube", "v3", credentials=creds)
 
-def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int = 12, day_offset: int = 0):
-    """Uploads video to YouTube and sets schedule time for peak EST hours.
+def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int = 12,
+                           target_minute_est: int = 0, day_offset: int = 0):
+    """Uploads video to YouTube and sets schedule time for peak EST/EDT hours.
+
+    target_minute_est matters — several slots are on the half-hour (e.g.
+    7:30 AM), and dropping the minutes silently shifted every such slot
+    30 minutes early. Always pass both hour AND minute for the intended slot.
 
     day_offset lets overflow videos (4th, 5th, 6th... in a batch) roll over
     to the next day's slot instead of colliding with an earlier video that
@@ -36,7 +41,7 @@ def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int
     now = datetime.datetime.now(est_tz)
 
     scheduled_time = (now + datetime.timedelta(days=day_offset)).replace(
-        hour=target_hour_est, minute=0, second=0, microsecond=0
+        hour=target_hour_est, minute=target_minute_est, second=0, microsecond=0
     )
     # The "already passed today, push to tomorrow" safety check only makes
     # sense for same-day slots (day_offset == 0). Overflow videos already
@@ -53,7 +58,7 @@ def schedule_video_upload(video_path: Path, metadata: dict, target_hour_est: int
             "title": metadata.get("title", "Automated Viral Short")[:100],
             "description": f"{metadata.get('description', '')}\n\n#shorts",
             "tags": clean_tags,
-            "categoryId": "24"  # Entertainment
+            "categoryId": "22"  # People & Blogs — more accurate than Entertainment for finance content
         },
         "status": {
             "privacyStatus": "private",  # Must be private to be scheduled
