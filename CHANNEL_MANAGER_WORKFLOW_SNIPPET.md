@@ -1,4 +1,4 @@
-# Adding the AI Channel Manager as a daily check
+Adding the AI Channel Manager as a daily check
 
 Add this as a SECOND job in `.github/workflows/daily_bot.yml` (or a new
 workflow file) so it runs once a day, separately from video generation:
