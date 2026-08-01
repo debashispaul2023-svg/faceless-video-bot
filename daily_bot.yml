@@ -1,0 +1,52 @@
+name: Daily Automatic Video Generator & Publisher
+
+on:
+  schedule:
+    # দিনে মাত্র ১ বার চলে — এই একটা run-ই ৩টা ভিডিও বানিয়ে
+    # publishAt দিয়ে ৩টা আলাদা সময়ে (7:30 AM / 1:00 PM / 5:30 PM EDT)
+    # schedule করে দেয়। প্রথম slot-এর (11:30 UTC) অনেক আগে, 08:00 UTC-এ
+    # চালানো হচ্ছে যাতে generate+render+upload করার জন্য যথেষ্ট সময় থাকে।
+    - cron: '0 8 * * *'
+  workflow_dispatch: # ম্যানুয়ালি টেস্ট করার জন্য
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # গিটহাবে হিস্ট্রি ফাইল কমিট করার জন্য পারমিশন
+
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install System Dependencies (FFmpeg, ImageMagick, Fonts)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg imagemagick fonts-dejavu-core
+
+    - name: Install Python Packages
+      run: |
+        pip install -r requirements.txt
+
+    - name: Run Auto Video Generator & Publisher
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+        YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+        YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+      run: |
+        python main.py
+
+    - name: Commit updated used topics history
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        git add assets/used_topics.json
+        git commit -m "chore: update used topics history [skip ci]" || exit 0
+        git push
