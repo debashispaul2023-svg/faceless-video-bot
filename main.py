@@ -11,25 +11,23 @@ import analytics_feedback
 
 def get_sequential_slot_est(index: int):
     """
-    Maps video index sequentially to US Prime Time slots, and returns the
-    target hour, target minute, AND how many days ahead it should be
-    scheduled. This is what makes overflow videos (4th, 5th, 6th...) roll
-    over to the next day instead of colliding with today's already-used
-    slots.
-
-    Slots (EST/EDT equivalent to IST 5:00 PM, 10:30 PM, and 3:00 AM next day):
-    1. 7:30 AM EDT (5:00 PM IST)
-    2. 1:00 PM EDT (10:30 PM IST)
-    3. 5:30 PM EDT (3:00 AM IST next day)
+    Maps video index sequentially to YOUR personal finance channel's time slots.
+    
+    3 videos per day at FIXED TIMES:
+    1. 3:00 AM EDT (Slot 1)
+    2. 5:00 PM EDT (Slot 2)
+    3. 10:30 PM EDT (Slot 3)
+    
+    Videos 4-6 roll over to next day, 7-9 to day+2, etc.
     """
     slot_pattern = [
-        (7, 30),   # 7:30 AM EDT (5:00 PM IST)
-        (13, 0),   # 1:00 PM EDT (10:30 PM IST)
-        (17, 30),  # 5:30 PM EDT (3:00 AM IST next day)
+        (3, 0),     # 3:00 AM EDT
+        (17, 0),    # 5:00 PM EDT
+        (22, 30),   # 10:30 PM EDT
     ]
 
     pattern_index = index % len(slot_pattern)
-    day_offset = index // len(slot_pattern)   # 0,0,0 -> 1,1,1 -> 2,2,2 ...
+    day_offset = index // len(slot_pattern)
 
     target_hour, target_minute = slot_pattern[pattern_index]
     return target_hour, target_minute, day_offset
@@ -64,10 +62,8 @@ def process_single_short(index: int):
             day_offset=day_offset
         )
         print(f"[✓] Upload process completed for Short #{index + 1} "
-              f"at EST hour {target_hour}:{target_minute:02d} (day +{day_offset})!")
+              f"at {target_hour}:{target_minute:02d} EDT (day +{day_offset})!")
 
-        # Best-effort: remember which category this video came from, so the
-        # analytics feedback loop can later correlate performance to topic.
         try:
             analytics_feedback.log_published_video(
                 video_id=video_id,
@@ -81,8 +77,6 @@ def process_single_short(index: int):
         print(f"[!] Upload failed for Short #{index + 1}: {e}")
         traceback.print_exc()
 
-    # Instagram Reels — completely separate from the YouTube upload above,
-    # so a failure here never affects YouTube (or vice versa).
     try:
         upload_to_instagram(final_video_path, script_data)
     except Exception as e:
@@ -94,10 +88,6 @@ def main():
     print("🎬 STARTING AUTOMATION PIPELINE FOR 3 SHORTS")
     print("=" * 60)
 
-    # Best-effort: pull in performance data from previously published videos
-    # (if the analytics API is set up) so today's topic choices lean toward
-    # what's actually working. Safe no-op until that one-time setup is done —
-    # see the top of analytics_feedback.py.
     try:
         analytics_feedback.update_category_weights()
     except Exception as e:
