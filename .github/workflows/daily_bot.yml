@@ -50,3 +50,31 @@ jobs:
         git add assets/used_topics.json
         git commit -m "chore: update used topics history [skip ci]" || exit 0
         git push
+
+  channel-manager:
+    runs-on: ubuntu-latest
+    # চালু করার জন্য: 9:00 AM UTC-তে (প্রথম job-এর পরে, বাকি video uploads complete হওয়ার পরে)
+    needs: build-and-publish
+    
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Python Packages
+      run: pip install -r requirements.txt
+
+    - name: Run AI Channel Manager (DRY RUN by default)
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+        YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+        YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        # DRY RUN মোডে শুরু করুন (শুধু log করবে, video edit করবে না)।
+        # কয়েকদিনের log দেখার পর নিশ্চিত হলে "true" করুন।
+        CHANNEL_MANAGER_APPLY_CHANGES: "false"
+      run: python channel_manager.py
