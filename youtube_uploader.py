@@ -9,6 +9,71 @@ from googleapiclient.http import MediaFileUpload
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
+# The ONLY three times a video is ever allowed to publish. Nothing in this
+# file ever schedules outside these exact clock times (IST).
+DAILY_SLOTS = [(3, 0), (17, 0), (22, 30)]  # 3:00 AM, 5:00 PM, 10:30 PM
+
+
+def find_next_available_slots(count: int = 3):
+    """
+    Looks at what's ALREADY scheduled/published on this channel and returns
+    the next `count` FREE slots as (day_offset, hour, minute) tuples —
+    filling any gaps in today first, then tomorrow, then the day after, etc.
+    A day only gets skipped once all 3 of ITS fixed slots are taken.
+
+    This is a one-time, up-front lookahead (called once per run, before any
+    uploading starts) — NOT a per-upload dynamic override. Once a slot is
+    chosen here, schedule_video_upload() below uses it exactly as given, no
+    further checking or second-guessing.
+    """
+    youtube = authenticate_youtube()
+    ist_tz = pytz.timezone('Asia/Kolkata')
+    now = datetime.datetime.now(ist_tz)
+
+    booked = {}
+    video_ids = []
+    page_token = None
+    for _ in range(3):  # a handful of pages is plenty for a 3-a-day channel
+        resp = youtube.search().list(
+            part="id", forMine=True, type="video", order="date",
+            maxResults=50, pageToken=page_token
+        ).execute()
+        video_ids += [item["id"]["videoId"] for item in resp.get("items", [])]
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    for i in range(0, len(video_ids), 50):
+        batch = video_ids[i:i + 50]
+        if not batch:
+            continue
+        details = youtube.videos().list(part="status,snippet", id=",".join(batch)).execute()
+        for item in details.get("items", []):
+            when_str = item["status"].get("publishAt") or item["snippet"].get("publishedAt")
+            if not when_str:
+                continue
+            when = datetime.datetime.fromisoformat(when_str.replace("Z", "+00:00")).astimezone(ist_tz)
+            booked.setdefault(when.date(), set()).add((when.hour, when.minute))
+
+    results = []
+    day_offset = 0
+    while len(results) < count and day_offset < 60:  # 60-day safety valve
+        candidate_date = (now + datetime.timedelta(days=day_offset)).date()
+        taken = booked.setdefault(candidate_date, set())
+        for hour, minute in DAILY_SLOTS:
+            if len(results) >= count:
+                break
+            slot_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + datetime.timedelta(days=day_offset)
+            already_passed_today = day_offset == 0 and slot_dt <= now
+            if (hour, minute) in taken or already_passed_today:
+                continue
+            results.append((day_offset, hour, minute))
+            taken.add((hour, minute))
+        day_offset += 1
+
+    print(f"[+] Next {count} available slot(s): {results}")
+    return results
+
 
 def authenticate_youtube():
     creds = Credentials(
