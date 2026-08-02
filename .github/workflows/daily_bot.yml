@@ -47,7 +47,11 @@ jobs:
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
-        git add assets/used_topics.json assets/published_log.json assets/category_scores.json
+        for f in assets/used_topics.json assets/published_log.json assets/category_scores.json; do
+          if [ -f "$f" ]; then
+            git add "$f"
+          fi
+        done
         git commit -m "chore: update bot state [skip ci]" || exit 0
         git push
 
