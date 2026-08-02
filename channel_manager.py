@@ -31,39 +31,6 @@ Requires the SAME extra OAuth scope as analytics_feedback.py
 (yt-analytics.readonly) — see that file's docstring for the one-time setup.
 """
 
-"""
-AI Channel Manager.
-
-Runs as a SEPARATE, once-a-day check (not on every video-generation run —
-see the workflow note at the bottom of this file) and does three things:
-
-  1. Detects "stuck" schedules: a video that was scheduled to go public at
-     some past time but is STILL sitting private (a scheduling failure on
-     YouTube's side, or a bug in our own code) — and publishes it
-     immediately so it doesn't sit invisible forever.
-
-  2. Detects underperforming videos (published 48h+ ago, views well below
-     the channel's own recent median) and uses Gemini to rewrite a punchier
-     title/description, then updates it on YouTube.
-
-  3. Checks whether the pipeline has gone quiet (no successful upload in the
-     last ~36 hours) and prints a clear warning in the Actions log — this is
-     as close to "keep the channel from going dormant" as code run once a
-     day CAN safely do; it cannot fix a broken Actions schedule by itself,
-     but it makes the problem visible instead of silent.
-
-═══════════════════════════════════════════════════════════════════════
-SAFETY: DRY-RUN BY DEFAULT
-═══════════════════════════════════════════════════════════════════════
-This script only LOGS what it would change unless the environment variable
-CHANNEL_MANAGER_APPLY_CHANGES is set to "true". Live-editing a real
-channel's titles/descriptions is not something that should run unattended
-and unreviewed on day one — watch a few dry-run logs first, then flip it on.
-
-Requires the SAME extra OAuth scope as analytics_feedback.py
-(yt-analytics.readonly) — see that file's docstring for the one-time setup.
-"""
-
 import os
 import json
 import traceback
@@ -159,17 +126,21 @@ def _fix_stuck_schedules(youtube, video_ids: list):
     return fixed
 
 
-def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: str, old_description: str):
-    """Asks Gemini for a punchier title/description and applies it."""
+def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: str,
+                             old_description: str, old_tags: list):
+    """Asks Gemini for a punchier title/description/tags and applies all three."""
     try:
         prompt = (
             "You are a YouTube Shorts optimization expert for a US personal-finance channel. "
-            "This video is underperforming. Rewrite its title and description to be punchier "
-            "and more click-worthy WITHOUT being clickbait-misleading and WITHOUT making any "
-            "financial promises or recommending specific investments (keep it educational, "
-            "compliant, general). Return ONLY valid JSON: "
-            '{"title": "...", "description": "..."}\n\n'
-            f"Current title: {old_title}\nCurrent description: {old_description}"
+            "This video is underperforming. Rewrite its title, description, AND tags to be "
+            "punchier and more discoverable WITHOUT being clickbait-misleading and WITHOUT "
+            "making any financial promises or recommending specific investments (keep it "
+            "educational, compliant, general). Tags should be 8-15 short, relevant keywords "
+            "(no # symbols). Return ONLY valid JSON: "
+            '{"title": "...", "description": "...", "tags": ["...", "..."]}\n\n'
+            f"Current title: {old_title}\n"
+            f"Current description: {old_description}\n"
+            f"Current tags: {', '.join(old_tags) if old_tags else '(none)'}"
         )
         response = gemini_client.models.generate_content(model="gemini-3.5-flash", contents=prompt)
         raw = response.text.strip()
@@ -178,10 +149,12 @@ def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: st
         new_meta = json.loads(raw)
         new_title = new_meta.get("title", old_title)[:100]
         new_description = new_meta.get("description", old_description)
+        new_tags = new_meta.get("tags", old_tags) or old_tags
 
         _log_action({
             "type": "rewrite_metadata", "video_id": video_id,
             "old_title": old_title, "new_title": new_title,
+            "old_tags": old_tags, "new_tags": new_tags,
         })
 
         if APPLY_CHANGES:
@@ -192,14 +165,15 @@ def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: st
                     "snippet": {
                         "title": new_title,
                         "description": new_description,
-                        "categoryId": "22",
+                        "tags": new_tags,
+                        "categoryId": "27",  # Education
                     },
                 },
             ).execute()
-            print(f"[✓] Updated metadata for underperforming video {video_id}: '{new_title}'")
+            print(f"[✓] Updated title/description/tags for underperforming video {video_id}: '{new_title}'")
         else:
-            print(f"[i] (dry run) Would rewrite {video_id} title to: '{new_title}'. Set "
-                  f"CHANNEL_MANAGER_APPLY_CHANGES=true to actually apply this.")
+            print(f"[i] (dry run) Would rewrite {video_id} -> title: '{new_title}', "
+                  f"tags: {new_tags}. Set CHANNEL_MANAGER_APPLY_CHANGES=true to actually apply this.")
         return True
     except Exception as e:
         print(f"[!] Could not rewrite metadata for {video_id}: {e}")
@@ -207,9 +181,16 @@ def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: st
         return False
 
 
+# For a brand-new channel with too few videos to compute a reliable
+# median, fall back to this absolute "clearly not getting watched" bar.
+_ABSOLUTE_LOW_VIEW_FALLBACK = 15
+
+
 def _check_underperformers(youtube, analytics, video_ids: list):
-    """Finds videos that are old enough to judge and well below the
-    channel's own median, and rewrites up to _MAX_EDITS_PER_RUN of them."""
+    """Finds videos that are old enough to judge and clearly underperforming
+    (either well below the channel's own median, or below an absolute
+    low-view bar when there aren't enough videos yet for a fair median),
+    and rewrites up to _MAX_EDITS_PER_RUN of them."""
     now = datetime.now(timezone.utc)
     stats = []
 
@@ -243,30 +224,40 @@ def _check_underperformers(youtube, analytics, video_ids: list):
                 "video_id": video_id, "views": views,
                 "title": snippet.get("title", ""),
                 "description": snippet.get("description", ""),
+                "tags": snippet.get("tags", []),
             })
         except Exception as e:
             print(f"[!] Could not fetch stats for {video_id}: {e}")
 
-    if len(stats) < 3:
-        print("[i] Not enough eligible videos yet to judge under-performance fairly.")
+    if not stats:
+        print("[i] No eligible videos yet (nothing public & 48h+ old) to review.")
         return
 
-    view_counts = sorted(s["views"] for s in stats)
-    median_views = view_counts[len(view_counts) // 2]
-    threshold = median_views * _UNDERPERFORM_RATIO
+    if len(stats) < 3:
+        # Not enough videos for a fair median — use the absolute low-view
+        # bar instead of giving up entirely.
+        print(f"[i] Only {len(stats)} eligible video(s) so far — using an absolute "
+              f"low-view bar ({_ABSOLUTE_LOW_VIEW_FALLBACK}) instead of a channel median.")
+        underperformers = [s for s in stats if s["views"] < _ABSOLUTE_LOW_VIEW_FALLBACK]
+    else:
+        view_counts = sorted(s["views"] for s in stats)
+        median_views = view_counts[len(view_counts) // 2]
+        threshold = max(median_views * _UNDERPERFORM_RATIO, _ABSOLUTE_LOW_VIEW_FALLBACK)
+        print(f"[i] Channel median views (eligible videos): {median_views}, "
+              f"underperform threshold: {threshold:.0f}.")
+        underperformers = [s for s in stats if s["views"] < threshold]
 
-    underperformers = [s for s in stats if s["views"] < threshold]
     if not underperformers:
         print("[i] No clearly underperforming videos found this run.")
         return
 
-    print(f"[i] Channel median views (eligible videos): {median_views}. "
-          f"Found {len(underperformers)} underperformer(s).")
+    print(f"[i] Found {len(underperformers)} underperformer(s), rewriting up to "
+          f"{_MAX_EDITS_PER_RUN} of them.")
 
     gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     for entry in underperformers[:_MAX_EDITS_PER_RUN]:
         _rewrite_underperformer(youtube, gemini_client, entry["video_id"],
-                                 entry["title"], entry["description"])
+                                 entry["title"], entry["description"], entry["tags"])
 
 
 def _check_channel_activity():
