@@ -29,7 +29,7 @@ _FALLBACK_SCRIPTS = [
         "title": "The 50/30/20 Budget Rule Explained!",
         "category": "budgeting and saving money",
         "description": "Master your money with this simple budgeting rule! #shorts #finance",
-        "script": "If you struggle to save money, try the 50/30/20 rule. Allocate 50 percent of your income to needs like rent and groceries, 30 percent to wants like entertainment and dining out, and the remaining 20 percent straight into savings and investments. It is the easiest way to take control of your financial future without feeling restricted.",
+        "script": "If you do not know the 50, 30, 20 rule, you are probably losing thousands of dollars a year without even realizing it. Allocate 50 percent of your income to needs like rent and groceries, 30 percent to wants like entertainment and dining out, and the remaining 20 percent straight into savings and investments. It is the easiest way to take control of your financial future without feeling restricted.",
         "hashtags": ["shorts", "finance", "budgeting", "money"],
         "visual_scenes": [
             {"search_query": "saving money cash", "ai_prompt": "stacks of cash and coins in a piggy bank, photorealistic, 9:16 vertical"},
@@ -43,7 +43,7 @@ _FALLBACK_SCRIPTS = [
         "title": "Why Saving Money is Making You Poorer!",
         "category": "investing and wealth building",
         "description": "Inflation is eating your savings. #shorts #investing",
-        "script": "Keeping all your money in a traditional savings account is actually making you poorer every single day. With inflation rising, the purchasing power of your cash drops continuously. Wealthy people do not let cash sit idle; they put their money into assets that beat inflation, like stocks, real estate, and index funds. Your money needs to work harder than you do.",
+        "script": "Your savings account is quietly stealing your money every single day, and your bank is never going to tell you. With inflation rising, the purchasing power of your cash drops continuously. Wealthy people do not let cash sit idle; they put their money into assets that beat inflation, like stocks, real estate, and index funds. Your money needs to work harder than you do.",
         "hashtags": ["shorts", "finance", "investing", "wealth"],
         "visual_scenes": [
             {"search_query": "bank vault money", "ai_prompt": "modern bank vault door opening with bright light, cinematic, 9:16 vertical"},
@@ -57,7 +57,7 @@ _FALLBACK_SCRIPTS = [
         "title": "The Credit Score Secret Banks HATE!",
         "category": "debt management and credit scores",
         "description": "How to boost your credit score fast! #shorts #credit",
-        "script": "Your credit score dictates almost every major financial move you will make. One of the fastest ways to boost it is by keeping your credit utilization below thirty percent. Pay your balance twice a month instead of once. Banks love responsible borrowers, and a higher score means thousands of dollars saved on loan interest.",
+        "script": "One three-digit number is silently deciding whether banks trust you with money, and most people have no idea they are wrecking it. One of the fastest ways to boost your credit score is by keeping your credit utilization below thirty percent. Pay your balance twice a month instead of once. Banks love responsible borrowers, and a higher score means thousands of dollars saved on loan interest.",
         "hashtags": ["shorts", "finance", "credit", "moneytips"],
         "visual_scenes": [
             {"search_query": "credit score rating", "ai_prompt": "digital credit score meter showing excellent rating, futuristic, 9:16 vertical"},
@@ -71,7 +71,7 @@ _FALLBACK_SCRIPTS = [
         "title": "Best Side Hustles to Start With Zero Money!",
         "category": "side hustles and making money online",
         "description": "Make extra income from home! #shorts #sidehustle",
-        "script": "Want to escape the nine-to-five trap? You do not need thousands of dollars to start a profitable side hustle. Skills like freelance video editing, copywriting, and digital marketing require zero upfront capital, only your time and internet connection. High-income skills are the ultimate asset in today economy.",
+        "script": "Some people make more money in ten hours a week than others make in a forty-hour job, and they never once show up to an office. You do not need thousands of dollars to start a profitable side hustle. Skills like freelance video editing, copywriting, and digital marketing require zero upfront capital, only your time and internet connection. High-income skills are the ultimate asset in today economy.",
         "hashtags": ["shorts", "finance", "sidehustle", "entrepreneur"],
         "visual_scenes": [
             {"search_query": "laptop working remotely", "ai_prompt": "person working on a laptop in a cozy cafe, cinematic, 9:16 vertical"},
@@ -85,7 +85,7 @@ _FALLBACK_SCRIPTS = [
         "title": "The Power of Compound Interest Explained!",
         "category": "financial independence and retirement planning",
         "description": "Make your money multiply automatically! #shorts #wealth",
-        "script": "Albert Einstein called compound interest the eighth wonder of the world. If you start investing just one hundred dollars a month in your twenties, that money could grow into a life-changing amount by retirement thanks to exponential growth. Time in the market always beats timing the market. The best day to start investing was ten years ago; the second best day is today.",
+        "script": "Starting with just one hundred dollars a month in your twenties could make you richer at retirement than most doctors, and almost nobody actually does it. Albert Einstein called this compound interest the eighth wonder of the world. Time in the market always beats timing the market. The best day to start investing was ten years ago; the second best day is today.",
         "hashtags": ["shorts", "finance", "investing", "wealthbuilding"],
         "visual_scenes": [
             {"search_query": "hourglass running sand", "ai_prompt": "close up of an hourglass measuring time passing by, cinematic, 9:16 vertical"},
@@ -236,8 +236,13 @@ def generate_script(topic_type="facts"):
             f"Write a 30-45 second Short script about an astounding, lesser-known fact in the category of "
             f"{category}.{avoid_clause}\n\n"
             "Requirements:\n"
-            "- Open with a scroll-stopping hook in the first sentence (a bold claim, a shocking number, or "
-            "a 'you've been lied to about X' style line) — not a slow intro.\n"
+            "- The VERY FIRST SENTENCE must make someone stop scrolling because they're shocked or "
+            "instantly curious — lead with the single most surprising number, consequence, or claim in "
+            "the whole script. Do NOT ease into it.\n"
+            "- Banned opening patterns (these are boring, never use them): 'Did you know...', "
+            "'Let's talk about...', 'Have you ever wondered...', any sentence that explains what the "
+            "topic IS before revealing why it matters. The first sentence should make the topic's "
+            "STAKES or SHOCK obvious immediately — explain the mechanism/details afterward, not first.\n"
             "- Keep the narration conversational and energetic, like you're telling a friend something wild.\n"
             "- End with a punchy closing line or a reason to keep watching/follow.\n"
             "- COMPLIANCE (strict, this is financial content): NEVER recommend a specific stock, crypto coin, "
