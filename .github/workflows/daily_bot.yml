@@ -81,5 +81,5 @@ jobs:
         YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         # DRY RUN মোডে শুরু করুন (শুধু log করবে, video edit করবে না)।
         # কয়েকদিনের log দেখার পর নিশ্চিত হলে "true" করুন।
-        CHANNEL_MANAGER_APPLY_CHANGES: "false"
+        CHANNEL_MANAGER_APPLY_CHANGES: "true"
       run: python channel_manager.py
