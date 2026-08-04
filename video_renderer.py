@@ -3,9 +3,10 @@ import json
 import random
 import traceback
 from pathlib import Path
-from PIL import ImageFont
+import numpy as np
+from PIL import ImageFont, Image, ImageDraw
 from moviepy import (
-    VideoFileClip, AudioFileClip, ImageClip, TextClip,
+    VideoFileClip, AudioFileClip, ImageClip, TextClip, VideoClip, ColorClip,
     CompositeVideoClip, CompositeAudioClip, concatenate_videoclips,
     concatenate_audioclips, vfx, afx
 )
@@ -30,6 +31,36 @@ _CROSSFADE_DURATION = 0.4
 _KEN_BURNS_ZOOM = 0.12
 _CAPTION_FONT_SIZE = 70
 _CAPTION_CHUNK_SIZE = 3  # words shown on screen together, with one highlighted at a time
+
+# --- Retention tuning ---------------------------------------------------
+# The HOOK scene (the very first one) runs at this fraction of an even split,
+# so the opening cut lands noticeably faster than the rest of the video. Most
+# swipe-aways happen in the first 1-2 seconds, and a quick early cut is a
+# well-documented pattern-interrupt that keeps thumbs from moving.
+_HOOK_DURATION_RATIO = 0.65
+
+# A thin bar along the bottom edge that fills up as the video plays, so
+# viewers can see at a glance how much is left — this alone measurably
+# reduces swipe-away on Shorts/Reels since it visually promises "this is
+# quick." Purely cosmetic; safe to disable by flipping this to False.
+_SHOW_PROGRESS_BAR = True
+_PROGRESS_BAR_HEIGHT = 10
+_PROGRESS_BAR_BG_COLOR = (60, 60, 60)
+_PROGRESS_BAR_FILL_COLOR = (255, 200, 0)
+
+# A "paper cutout" countdown badge (1, 2, 3, 4) shown during the matching rule
+# scene. Drawn entirely in code with PIL rather than asking the AI image
+# generator to render the number into the background — AI image models
+# routinely botch drawn digits/text (illegible or wrong numbers look
+# amateurish), and drawing it ourselves means zero external/copyrighted
+# assets are involved. Only applied when visual_scenes has exactly the
+# expected [hook, rule1, rule2, rule3, rule4, cta] shape (6 scenes) — skipped
+# silently otherwise, since position-based number mapping wouldn't be
+# reliable if any scene failed to generate.
+_SHOW_RULE_STICKERS = True
+_RULE_STICKER_SIZE = 260
+_RULE_STICKER_TOP_MARGIN = 140
+_RULE_STICKER_POP_IN_SECONDS = 0.25
 
 
 def _resolve_font_path() -> str:
@@ -239,6 +270,92 @@ def _clip_for_asset(asset: dict, duration: float):
     return _ken_burns_image_clip(path, duration, target_w, target_h)
 
 
+def _build_progress_bar(total_duration: float, target_w: int, target_h: int):
+    """
+    A thin bar along the bottom edge: a dim full-width track, plus a bright
+    fill that grows from 0 to full width as the video plays. Built as a raw
+    numpy frame (rather than resizing a clip) so the fill's width is exactly
+    proportional to elapsed time, independent of height. Best-effort — any
+    failure here just means no progress bar, never a broken render.
+    """
+    track = (
+        ColorClip(size=(target_w, _PROGRESS_BAR_HEIGHT), color=_PROGRESS_BAR_BG_COLOR)
+        .with_duration(total_duration)
+        .with_position((0, target_h - _PROGRESS_BAR_HEIGHT))
+    )
+
+    def make_fill_frame(t):
+        progress = min(max(t / total_duration, 0.0), 1.0) if total_duration > 0 else 0.0
+        frame = np.zeros((_PROGRESS_BAR_HEIGHT, target_w, 3), dtype='uint8')
+        filled_w = int(target_w * progress)
+        if filled_w > 0:
+            frame[:, :filled_w] = _PROGRESS_BAR_FILL_COLOR
+        return frame
+
+    fill = (
+        VideoClip(make_frame=make_fill_frame, duration=total_duration)
+        .with_position((0, target_h - _PROGRESS_BAR_HEIGHT))
+    )
+
+    return [track, fill]
+
+
+def _draw_rule_sticker_frame(number: int) -> np.ndarray:
+    """
+    Draws a simple 'paper cutout' countdown badge for a rule number as an
+    RGBA numpy array — an off-white circle with a soft drop shadow and a
+    dark bold number. 100% code-drawn: no AI generation, no internet asset,
+    no copyright exposure of any kind.
+    """
+    size = _RULE_STICKER_SIZE
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    pad, shadow_offset = 12, 6
+    draw.ellipse(
+        [pad + shadow_offset, pad + shadow_offset, size - pad + shadow_offset, size - pad + shadow_offset],
+        fill=(0, 0, 0, 90)
+    )
+    draw.ellipse([pad, pad, size - pad, size - pad], fill=(250, 246, 235, 255), outline=(30, 30, 30, 255), width=4)
+
+    font = ImageFont.truetype(_resolve_font_path(), int(size * 0.5))
+    text = str(number)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(
+        ((size - text_w) / 2 - bbox[0], (size - text_h) / 2 - bbox[1]),
+        text, font=font, fill=(20, 20, 20, 255)
+    )
+
+    return np.array(img)
+
+
+def _rule_sticker_clip(number: int, start_time: float, duration: float):
+    """Returns a positioned, pop-in-animated ImageClip of one rule badge,
+    timed to sit on screen for exactly that scene's duration."""
+    frame = _draw_rule_sticker_frame(number)
+    rgb = frame[:, :, :3]
+    alpha = frame[:, :, 3].astype("float32") / 255.0
+
+    img_clip = ImageClip(rgb).with_duration(duration)
+    mask_clip = ImageClip(alpha, ismask=True).with_duration(duration)
+    img_clip = img_clip.with_mask(mask_clip)
+
+    pop_in = _RULE_STICKER_POP_IN_SECONDS
+
+    def scale_at(t):
+        if t < pop_in:
+            return 0.6 + 0.4 * (t / pop_in)  # quick pop from 60% to 100% size
+        return 1.0
+
+    img_clip = (
+        img_clip.resized(scale_at)
+        .with_position(("center", _RULE_STICKER_TOP_MARGIN))
+        .with_start(start_time)
+    )
+    return img_clip
+
+
 def _apply_crossfades(clips: list, crossfade_duration: float):
     """
     Applies a fade-in to every clip after the first (so consecutive clips
@@ -281,12 +398,26 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
         raise ValueError("render_final_video received no visual assets to work with.")
 
     narration_clip = AudioFileClip(str(audio_path))
-    # A touch of extra time per scene so the crossfade overlap doesn't eat
-    # into the narration timing.
-    duration_per_asset = narration_clip.duration / len(assets) + _CROSSFADE_DURATION
+
+    # Every scene gets an even slice, EXCEPT the hook (first scene), which
+    # runs shorter on purpose — see _HOOK_DURATION_RATIO above. The time
+    # saved there is spread across the rest so the total still matches the
+    # narration exactly.
+    n = len(assets)
+    if n > 1:
+        even_split = narration_clip.duration / n
+        hook_duration = even_split * _HOOK_DURATION_RATIO
+        rest_duration = (narration_clip.duration - hook_duration) / (n - 1)
+        scene_durations = [hook_duration] + [rest_duration] * (n - 1)
+    else:
+        scene_durations = [narration_clip.duration]
+
+    # Each clip needs a touch of extra time so the crossfade overlap doesn't
+    # eat into the narration timing.
+    scene_durations = [d + _CROSSFADE_DURATION for d in scene_durations]
 
     clips = []
-    for asset in assets:
+    for asset, duration_per_asset in zip(assets, scene_durations):
         try:
             clips.append(_clip_for_asset(asset, duration_per_asset))
         except Exception:
@@ -328,14 +459,42 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
 
     try:
         captions = _build_captions(narration_text, narration_clip.duration, audio_path)
-        if captions:
-            final_clip = CompositeVideoClip([video_with_audio] + captions)
-        else:
-            final_clip = video_with_audio
     except Exception as e:
         print(f"[!] Caption rendering failed, continuing WITHOUT captions: {e}")
         traceback.print_exc()
-        final_clip = video_with_audio
+        captions = []
+
+    progress_bar_clips = []
+    if _SHOW_PROGRESS_BAR:
+        try:
+            progress_bar_clips = _build_progress_bar(narration_clip.duration, config.VIDEO_WIDTH, config.VIDEO_HEIGHT)
+        except Exception as e:
+            print(f"[!] Progress bar rendering failed, continuing WITHOUT it: {e}")
+            traceback.print_exc()
+
+    # Rule-number stickers (1-4) — only when the scene list has exactly the
+    # expected [hook, rule1, rule2, rule3, rule4, cta] shape. If any scene
+    # failed earlier (len(clips) != len(assets)), the position->rule-number
+    # mapping can't be trusted, so this is skipped silently rather than risk
+    # showing the wrong number over the wrong scene.
+    sticker_clips = []
+    if _SHOW_RULE_STICKERS and len(assets) == 6 and len(clips) == 6:
+        try:
+            scene_start_times, cursor = [], 0.0
+            for d in scene_durations:
+                scene_start_times.append(cursor)
+                cursor += d - _CROSSFADE_DURATION
+            for rule_num, scene_idx in zip([1, 2, 3, 4], [1, 2, 3, 4]):
+                sticker_clips.append(
+                    _rule_sticker_clip(rule_num, scene_start_times[scene_idx], scene_durations[scene_idx])
+                )
+        except Exception as e:
+            print(f"[!] Rule-number sticker overlay failed, continuing WITHOUT it: {e}")
+            traceback.print_exc()
+            sticker_clips = []
+
+    overlay_clips = captions + progress_bar_clips + sticker_clips
+    final_clip = CompositeVideoClip([video_with_audio] + overlay_clips) if overlay_clips else video_with_audio
 
     output_path = config.OUTPUT_DIR / output_filename
     try:
@@ -360,4 +519,3 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
 
     print(f"[✓] Render completed: {output_path}")
     return output_path
-            
