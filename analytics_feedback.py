@@ -6,10 +6,10 @@ REQUIRES A ONE-TIME SETUP STEP before this does anything useful:
      other YouTube API (APIs & Services > Library > search "YouTube Analytics
      API" > Enable).
   2. Your YOUTUBE_REFRESH_TOKEN must include the yt-analytics.readonly scope.
-     The existing token (authorized with only youtube.upload) will NOT work
-     for this — you need to redo the OAuth Playground authorization step
+     The existing token (authorized with only youtube/youtube.upload) will NOT
+     work for this — you need to redo the OAuth Playground authorization step
      with BOTH scopes ticked:
-       - https://www.googleapis.com/auth/youtube.upload
+       - https://www.googleapis.com/auth/youtube
        - https://www.googleapis.com/auth/yt-analytics.readonly
      then update the YOUTUBE_REFRESH_TOKEN GitHub secret with the new token.
 
@@ -31,7 +31,7 @@ _LOG_FILE = config.ASSETS_DIR / "published_log.json"
 _SCORES_FILE = config.ASSETS_DIR / "category_scores.json"
 
 SCOPES = [
-    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 
