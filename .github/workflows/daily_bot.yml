@@ -3,9 +3,11 @@ name: Daily Automatic Video Generator & Publisher
 on:
   schedule:
     # দিনে মাত্র ১ বার চলে — এই একটা run-ই ৩টা ভিডিও বানিয়ে
-    # publishAt দিয়ে ৩টা আলাদা সময়ে (7:30 AM / 1:00 PM / 5:30 PM EDT)
-    # schedule করে দেয়। প্রথম slot-এর (11:30 UTC) অনেক আগে, 08:00 UTC-এ
-    # চালানো হচ্ছে যাতে generate+render+upload করার জন্য যথেষ্ট সময় থাকে।
+    # publishAt দিয়ে ৩টা fixed IST slot-এ (3:00 AM / 5:00 PM / 10:30 PM)
+    # schedule করে দেয় — find_next_available_slots() আগে থেকে YouTube
+    # চেক করে ঠিক কোন দিনে বসবে সেটা ঠিক করে (আজ ফুল থাকলে পরের দিন)।
+    # 08:00 UTC (~1:30 PM IST)-এ চালানো হচ্ছে যাতে generate+render+upload
+    # করার জন্য যথেষ্ট সময় থাকে।
     - cron: '0 8 * * *'
   workflow_dispatch: # ম্যানুয়ালি টেস্ট করার জন্য
 
@@ -58,9 +60,9 @@ jobs:
 
   channel-manager:
     runs-on: ubuntu-latest
-    # চালু করার জন্য: 9:00 AM UTC-তে (প্রথম job-এর পরে, বাকি video uploads complete হওয়ার পরে)
     needs: build-and-publish
-    
+    if: always()   # build-and-publish fail করলেও চলবে, যাতে activity-alert কাজ করে
+
     steps:
     - name: Check out repository
       uses: actions/checkout@v3
@@ -73,13 +75,13 @@ jobs:
     - name: Install Python Packages
       run: pip install -r requirements.txt
 
-    - name: Run AI Channel Manager (DRY RUN by default)
+    - name: Run AI Channel Manager (LIVE — applies changes)
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
         YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
         YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-        # DRY RUN মোডে শুরু করুন (শুধু log করবে, video edit করবে না)।
-        # কয়েকদিনের log দেখার পর নিশ্চিত হলে "true" করুন।
+        # LIVE মোডে চলছে — title/description/tags/thumbnail সত্যিই বদলে দেবে।
+        # সমস্যা মনে হলে "false" করে আবার dry-run-এ ফিরিয়ে নিতে পারেন।
         CHANNEL_MANAGER_APPLY_CHANGES: "true"
       run: python channel_manager.py
