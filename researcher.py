@@ -191,8 +191,7 @@ def _call_gemini_single_model(client, prompt, model_name):
 # "high demand" — this is NOT a quota or key problem, just that specific
 # model being busy), fall through to trying other Gemini models before
 # giving up and using the local fallback script.
-_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
-
+_MODEL_FALLBACK_CHAIN = ["gemini-2.5-flash", "gemini-2.5-pro"]
 
 def _call_gemini(client, prompt):
     last_error = None
@@ -251,12 +250,12 @@ def _fetch_trending_finance_titles(limit: int = 8) -> list:
         return []
 
 
-_MAX_SCRIPT_WORDS = 65  # ~25 seconds at a natural ~155 words/minute speaking pace
+_MAX_SCRIPT_WORDS = 75  # ~25-30 seconds at a natural ~155 words/minute speaking pace
 
 
 def _enforce_max_duration(script: str) -> str:
     """
-    Gemini's '15-25 second' instruction is just a request — it doesn't
+    Gemini's '25-30 second' instruction is just a request — it doesn't
     reliably keep the model from writing a much longer script. This
     enforces it in code: if the script runs over budget, trims it down to
     the last COMPLETE sentence that still fits, rather than cutting off
@@ -330,40 +329,47 @@ def generate_script(topic_type="facts"):
             )
 
         prompt = (
-            "You are a viral YouTube Shorts scriptwriter. Your scripts are fast-paced, punchy, and built "
-            "to stop the scroll in the first 2 seconds. Short sentences. No filler. Every line earns its "
-            "place or gets cut.\n\n"
-            f"Write a TIGHT 15-25 second Short script (short scripts finish more often and get pushed "
-            f"harder by the algorithm — do not pad it out) about an astounding, lesser-known fact in "
-            f"the category of "
+            "You are an elite financial advisor and viral YouTube Shorts scriptwriter. Write a "
+            "high-retention, psychology-backed finance script strictly tailored for a 25-30 second "
+            f"Short, in the category of "
             f"{category}.{avoid_clause}{retention_clause}{trending_clause}\n\n"
-            "Requirements:\n"
-            "- The VERY FIRST SENTENCE must make someone stop scrolling because they're shocked or "
-            "instantly curious — lead with the single most surprising number, consequence, or claim in "
-            "the whole script. Do NOT ease into it.\n"
-            "- The FIRST item in 'visual_scenes' must be the single most striking, attention-grabbing "
-            "visual in the whole script — it should visually punch as hard as the opening line does, "
-            "not a generic establishing shot. Save calmer/explanatory visuals for later scenes.\n"
-            "- Banned opening patterns (these are boring, never use them): 'Did you know...', "
-            "'Let's talk about...', 'Have you ever wondered...', any sentence that explains what the "
-            "topic IS before revealing why it matters. The first sentence should make the topic's "
-            "STAKES or SHOCK obvious immediately — explain the mechanism/details afterward, not first.\n"
-            "- Keep the narration conversational and energetic, like you're telling a friend something wild.\n"
-            "- End with a punchy closing line or a reason to keep watching/follow.\n"
-            "- COMPLIANCE (strict, this is financial content): NEVER recommend a specific stock, crypto coin, "
-            "or investment product; NEVER promise or imply a guaranteed return or a specific dollar/wealth "
-            "outcome (e.g. 'you will become a millionaire', 'guaranteed profit'); keep everything general and "
-            "educational, framed as 'here's how X works', never 'here's what to buy'; if the fact could be "
-            "read as advice, phrase it as general education, not a personal recommendation.\n\n"
+            "STRICT SCRIPT STRUCTURE:\n"
+            "1. THE HOOK (first 3 seconds): a high-stakes, bold psychological hook that forces "
+            "viewers to freeze — lead with the single most shocking claim, number, or consequence "
+            "in the whole script. Style example: 'Smart people NEVER stay broke because they follow "
+            "these 4 money rules. Tell me in the comments if you follow rule number 4!' Do NOT ease "
+            "into it, and never open with 'Did you know...', 'Let's talk about...', or 'Have you "
+            "ever wondered...'.\n"
+            "2. FOUR DISTINCT FINANCIAL RULES: ultra-concise, practical money tips (rules 1-3), "
+            "each one earning its place. RULE 4 is the single most important, game-changing rule — "
+            "build a tiny dramatic pause (using '...') right before it lands.\n"
+            "3. HIGH-ENGAGEMENT CTA: a direct question that drives comments, plus a follow ask. "
+            "Style example: 'How many of these do you follow? Comment below and hit follow!'\n\n"
+            "VOICE:\n"
+            "- Ultra-short, fast-paced, punchy sentences. Zero filler.\n"
+            "- Write key emphasis words in UPPERCASE (e.g. 'NEVER', 'STOP', 'CHANGES EVERYTHING').\n"
+            "- Use ellipses (...) for short dramatic pauses before key insights.\n"
+            "- Tone: deep, authoritative, confident, urgent.\n"
+            "- STRICT WORD COUNT: the 'script' field must be 65 to 75 words total — this is "
+            "critical to keep the audio within 25-30 seconds. Do not go over.\n"
+            "- The 'script' field must be pure flowing spoken narration ONLY — no bracket labels "
+            "like '[HOOK]' or '[RULE 1]', no stage directions, no emojis. Just the words a voice "
+            "actor would actually say, in order: hook, rule 1, rule 2, rule 3, rule 4, then the CTA.\n\n"
+            "COMPLIANCE (strict, this is financial content): NEVER recommend a specific stock, "
+            "crypto coin, or investment product; NEVER promise or imply a guaranteed return or a "
+            "specific dollar/wealth outcome (e.g. 'you will become a millionaire', 'guaranteed "
+            "profit'); keep everything general and educational, framed as 'here's how X works', "
+            "never 'here's what to buy'.\n\n"
             "Return ONLY a valid JSON object with the following keys: "
-            "'title' (string), 'description' (string), 'script' (string, full narration), "
-            "'hashtags' (list of strings), "
-            "'visual_scenes' (a list of 5 to 6 objects, one per beat of the script). "
-            "Each object in 'visual_scenes' MUST have exactly two keys: "
-            "'search_query' (1-2 broad, generic English words suitable for searching a stock photo/video "
-            "library, e.g. 'ocean waves', 'human brain', 'ancient ruins' — NOT a full sentence), and "
-            "'ai_prompt' (a detailed, vivid description of the same scene, to be used ONLY if no stock "
-            "footage is found, suitable for an AI image generator)."
+            "'title' (string), 'description' (string), 'script' (string, the full narration as "
+            "specified above), 'hashtags' (list of strings), "
+            "'visual_scenes' (a list of exactly 6 objects, one per beat, in this order: hook, "
+            "rule 1, rule 2, rule 3, rule 4, cta). Each object MUST have exactly two keys: "
+            "'search_query' (1-2 broad, generic English words suitable for searching a stock "
+            "photo/video library — NOT a full sentence), and 'ai_prompt' (a detailed, vivid "
+            "description of the same scene, to be used ONLY if no stock footage is found, suitable "
+            "for an AI image generator). The visuals for the HOOK and RULE 4 should be the two most "
+            "visually striking scenes in the list."
         )
 
         response = _call_gemini(client, prompt)
