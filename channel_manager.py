@@ -32,13 +32,19 @@ Requires the SAME extra OAuth scope as analytics_feedback.py
 """
 
 import os
+import io
 import json
+import time
+import urllib.parse
 import traceback
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+import requests
+from PIL import Image, ImageDraw, ImageFont
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 from google import genai
 import config
 
@@ -58,6 +64,80 @@ _UNDERPERFORM_RATIO = 0.4
 _MIN_AGE_HOURS_FOR_REVIEW = 48
 _MAX_AGE_DAYS_FOR_REVIEW = 21
 _MAX_EDITS_PER_RUN = 3  # a safety cap so one bad run can't rewrite the whole channel
+
+_THUMBNAIL_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    str(config.ASSETS_DIR / "fonts" / "CaptionFont-Bold.ttf"),
+]
+
+
+def _resolve_thumbnail_font() -> str:
+    for candidate in _THUMBNAIL_FONT_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+    raise FileNotFoundError("No usable font found for thumbnail text (install fonts-dejavu-core).")
+
+
+def _wrap_text(draw, text, font, max_width):
+    words = text.upper().split()
+    lines, current = [], ""
+    for word in words:
+        trial = f"{current} {word}".strip()
+        if draw.textlength(trial, font=font) <= max_width:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _generate_thumbnail(title: str, save_path: Path) -> bool:
+    """
+    Generates a punchy, Shorts-style vertical thumbnail: an AI background
+    image (via Pollinations — no API key needed) with the new title burned
+    on top in bold text. Returns True/False; never raises.
+    """
+    try:
+        prompt = f"{title}, personal finance concept, dramatic cinematic lighting, photorealistic, no text, no watermark"
+        encoded = urllib.parse.quote(prompt)
+        url = (f"https://image.pollinations.ai/prompt/{encoded}"
+               f"?width=1080&height=1920&model=flux&seed={int(time.time())}")
+
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw_overlay = ImageDraw.Draw(overlay)
+        draw_overlay.rectangle([0, 0, img.width, img.height * 0.4], fill=(0, 0, 0, 130))
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype(_resolve_thumbnail_font(), 100)
+        max_text_width = img.width - 100
+        lines = _wrap_text(draw, title, font, max_text_width)[:3]
+
+        line_height = 115
+        start_y = 80
+        for i, line in enumerate(lines):
+            line_width = draw.textlength(line, font=font)
+            x = (img.width - line_width) / 2
+            y = start_y + i * line_height
+            for dx, dy in [(-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (3, 3), (-3, 3), (3, -3)]:
+                draw.text((x + dx, y + dy), line, font=font, fill="black")
+            draw.text((x, y), line, font=font, fill="yellow")
+
+        img.save(save_path, quality=92)
+        return True
+    except Exception as e:
+        print(f"[!] Thumbnail generation failed: {e}")
+        traceback.print_exc()
+        return False
 
 
 def _authenticate():
@@ -150,12 +230,23 @@ def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: st
         new_meta = json.loads(raw)
         new_title = new_meta.get("title", old_title)[:100]
         new_description = new_meta.get("description", old_description)
+        disclaimer = (
+            "This video is for educational and informational purposes only and does not "
+            "constitute financial advice. Always do your own research or consult a licensed "
+            "financial advisor before making financial decisions."
+        )
+        if disclaimer not in new_description:
+            new_description = f"{new_description}\n\n{disclaimer}"
         new_tags = new_meta.get("tags", old_tags) or old_tags
+
+        thumbnail_path = config.OUTPUT_DIR / f"thumb_{video_id}.jpg"
+        thumbnail_ready = _generate_thumbnail(new_title, thumbnail_path)
 
         _log_action({
             "type": "rewrite_metadata", "video_id": video_id,
             "old_title": old_title, "new_title": new_title,
             "old_tags": old_tags, "new_tags": new_tags,
+            "new_thumbnail_generated": thumbnail_ready,
         })
 
         if APPLY_CHANGES:
@@ -172,9 +263,21 @@ def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: st
                 },
             ).execute()
             print(f"[✓] Updated title/description/tags for underperforming video {video_id}: '{new_title}'")
+
+            if thumbnail_ready:
+                try:
+                    youtube.thumbnails().set(
+                        videoId=video_id,
+                        media_body=MediaFileUpload(str(thumbnail_path))
+                    ).execute()
+                    print(f"[✓] Updated thumbnail for {video_id}.")
+                except Exception as e:
+                    print(f"[!] Could not set thumbnail for {video_id} (often means the channel "
+                          f"isn't phone-verified yet — check youtube.com/verify): {e}")
         else:
             print(f"[i] (dry run) Would rewrite {video_id} -> title: '{new_title}', "
-                  f"tags: {new_tags}. Set CHANNEL_MANAGER_APPLY_CHANGES=true to actually apply this.")
+                  f"tags: {new_tags}, new thumbnail: {'ready' if thumbnail_ready else 'failed to generate'}. "
+                  f"Set CHANNEL_MANAGER_APPLY_CHANGES=true to actually apply this.")
         return True
     except Exception as e:
         print(f"[!] Could not rewrite metadata for {video_id}: {e}")
@@ -280,6 +383,99 @@ def _check_channel_activity():
         pass
 
 
+_RETENTION_INSIGHTS_FILE = config.ASSETS_DIR / "retention_insights.json"
+
+
+def _parse_iso8601_duration_seconds(duration: str) -> float:
+    """Parses YouTube's ISO 8601 video duration format (e.g. 'PT45S',
+    'PT1M5S') into seconds. Returns 0 if it can't be parsed."""
+    import re
+    match = re.match(r"PT(?:(\d+)M)?(?:(\d+)S)?", duration or "")
+    if not match:
+        return 0
+    minutes = int(match.group(1) or 0)
+    seconds = int(match.group(2) or 0)
+    return minutes * 60 + seconds
+
+
+def _analyze_retention_dropoff(youtube, analytics, video_ids: list):
+    """
+    Looks at audience retention curves for recent public videos and finds
+    roughly WHERE (in seconds) viewers tend to drop off the hardest. Writes
+    that as a plain-language note to assets/retention_insights.json, which
+    researcher.py reads and folds into the script prompt — so future
+    scripts can keep the pacing tight before that point instead of us
+    just guessing.
+
+    Best-effort: any failure here just means no retention guidance gets
+    added, nothing more.
+    """
+    try:
+        now = datetime.now(timezone.utc)
+        dropoff_points = []
+
+        # Sample a handful of recent public videos — enough for a rough
+        # signal without burning excessive API quota every run.
+        checked = 0
+        for video_id in video_ids:
+            if checked >= 8:
+                break
+            try:
+                details = youtube.videos().list(part="status,contentDetails", id=video_id).execute()
+                items = details.get("items", [])
+                if not items or items[0]["status"].get("privacyStatus") != "public":
+                    continue
+                duration_s = _parse_iso8601_duration_seconds(items[0]["contentDetails"].get("duration", ""))
+                if duration_s <= 0:
+                    continue
+
+                resp = analytics.reports().query(
+                    ids="channel==MINE",
+                    startDate="2020-01-01",
+                    endDate=now.date().isoformat(),
+                    metrics="audienceWatchRatio",
+                    dimensions="elapsedVideoTimeRatio",
+                    filters=f"video=={video_id}",
+                ).execute()
+                rows = resp.get("rows", [])
+                if len(rows) < 3:
+                    continue
+                checked += 1
+
+                # Find the single biggest drop between consecutive points.
+                biggest_drop, drop_at_ratio = 0, None
+                for i in range(1, len(rows)):
+                    prev_ratio = float(rows[i - 1][1])
+                    curr_ratio = float(rows[i][1])
+                    drop = prev_ratio - curr_ratio
+                    if drop > biggest_drop:
+                        biggest_drop = drop
+                        drop_at_ratio = float(rows[i][0])
+
+                if drop_at_ratio is not None and biggest_drop > 0.05:  # ignore noise
+                    dropoff_points.append(drop_at_ratio * duration_s)
+            except Exception:
+                continue
+
+        if not dropoff_points:
+            print("[i] Retention analysis: not enough data yet for a reliable signal.")
+            return
+
+        avg_dropoff_second = sum(dropoff_points) / len(dropoff_points)
+        insight = {
+            "typical_dropoff_second": round(avg_dropoff_second, 1),
+            "sample_size": len(dropoff_points),
+            "updated_at": now.isoformat(),
+        }
+        _RETENTION_INSIGHTS_FILE.write_text(json.dumps(insight, indent=2))
+        print(f"[+] Retention insight: viewers tend to drop off hardest around "
+              f"{avg_dropoff_second:.1f}s into the video (from {len(dropoff_points)} videos sampled).")
+
+    except Exception as e:
+        print(f"[i] Retention analysis skipped (non-fatal): {e}")
+        traceback.print_exc()
+
+
 def run_channel_manager():
     print("=" * 60)
     print(f"🤖 AI CHANNEL MANAGER — {'LIVE (will apply changes)' if APPLY_CHANGES else 'DRY RUN (logging only)'}")
@@ -304,6 +500,7 @@ def run_channel_manager():
         if fixed:
             print(f"[✓] Fixed {fixed} stuck schedule(s).")
 
+        _analyze_retention_dropoff(youtube, analytics, video_ids)
         _check_underperformers(youtube, analytics, video_ids)
 
     except KeyError as e:
