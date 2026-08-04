@@ -191,7 +191,8 @@ def _call_gemini_single_model(client, prompt, model_name):
 # "high demand" — this is NOT a quota or key problem, just that specific
 # model being busy), fall through to trying other Gemini models before
 # giving up and using the local fallback script.
-_MODEL_FALLBACK_CHAIN = ["gemini-2.5-flash", "gemini-2.5-pro"]
+_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+
 
 def _call_gemini(client, prompt):
     last_error = None
@@ -343,8 +344,9 @@ def generate_script(topic_type="facts"):
             "2. FOUR DISTINCT FINANCIAL RULES: ultra-concise, practical money tips (rules 1-3), "
             "each one earning its place. RULE 4 is the single most important, game-changing rule — "
             "build a tiny dramatic pause (using '...') right before it lands.\n"
-            "3. HIGH-ENGAGEMENT CTA: a direct question that drives comments, plus a follow ask. "
-            "Style example: 'How many of these do you follow? Comment below and hit follow!'\n\n"
+            "3. MEME-STYLE CTA: end with a lighthearted, sarcastic/funny comment-trigger instead "
+            "of a formal closing. Style example: 'Comment below how many rules you actually "
+            "follow... or just drop 'Rule 4' if you're lazy like me and hit follow!'\n\n"
             "VOICE:\n"
             "- Ultra-short, fast-paced, punchy sentences. Zero filler.\n"
             "- Write key emphasis words in UPPERCASE (e.g. 'NEVER', 'STOP', 'CHANGES EVERYTHING').\n"
@@ -369,7 +371,11 @@ def generate_script(topic_type="facts"):
             "photo/video library — NOT a full sentence), and 'ai_prompt' (a detailed, vivid "
             "description of the same scene, to be used ONLY if no stock footage is found, suitable "
             "for an AI image generator). The visuals for the HOOK and RULE 4 should be the two most "
-            "visually striking scenes in the list."
+            "visually striking scenes in the list. For RULE 2 or RULE 3 (pick one), make the "
+            "ai_prompt an exaggerated, funny reaction-style visual to break the monotony (e.g. "
+            "'a person's shocked exaggerated facial expression, comedic staging, bright lighting') "
+            "— this must be a wholly original AI-generated image: NEVER reference or describe any "
+            "copyrighted character, anime, movie/show still, meme template, logo, or trademark."
         )
 
         response = _call_gemini(client, prompt)
