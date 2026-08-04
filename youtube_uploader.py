@@ -76,13 +76,17 @@ def find_next_available_slots(count: int = 3):
 
 
 def authenticate_youtube():
+    # Deliberately NOT passing scopes= here: the refresh token already
+    # carries its actual granted scope server-side. Explicitly claiming a
+    # scope list on refresh can trigger 'invalid_scope' if it doesn't match
+    # EXACTLY what the token was issued with — omitting it lets Google just
+    # honor whatever was actually granted.
     creds = Credentials(
         token=None,
         refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
         client_id=os.environ["YOUTUBE_CLIENT_ID"],
         client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=SCOPES
     )
     creds.refresh(Request())
     return build("youtube", "v3", credentials=creds)
