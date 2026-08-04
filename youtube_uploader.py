@@ -128,7 +128,12 @@ def schedule_video_upload(video_path: Path, metadata: dict, target_hour: int,
     body = {
         "snippet": {
             "title": metadata.get("title", "Automated Short")[:100],
-            "description": f"{metadata.get('description', '')}\n\n#shorts",
+            "description": (
+                f"{metadata.get('description', '')}\n\n"
+                f"This video is for educational and informational purposes only and does not "
+                f"constitute financial advice. Always do your own research or consult a licensed "
+                f"financial advisor before making financial decisions.\n\n#shorts"
+            ),
             "tags": clean_tags,
             "categoryId": "27"  # Education
         },
