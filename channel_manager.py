@@ -61,13 +61,14 @@ _MAX_EDITS_PER_RUN = 3  # a safety cap so one bad run can't rewrite the whole ch
 
 
 def _authenticate():
+    # Deliberately NOT passing scopes= here — see the note in
+    # youtube_uploader.py's authenticate_youtube() for why.
     creds = Credentials(
         token=None,
         refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
         client_id=os.environ["YOUTUBE_CLIENT_ID"],
         client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=SCOPES,
     )
     creds.refresh(Request())
     return creds
