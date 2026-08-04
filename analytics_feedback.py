@@ -37,13 +37,14 @@ SCOPES = [
 
 
 def _authenticate():
+    # Deliberately NOT passing scopes= here — see the note in
+    # youtube_uploader.py's authenticate_youtube() for why.
     creds = Credentials(
         token=None,
         refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
         client_id=os.environ["YOUTUBE_CLIENT_ID"],
         client_secret=os.environ["YOUTUBE_CLIENT_SECRET"],
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=SCOPES,
     )
     creds.refresh(Request())
     return creds
