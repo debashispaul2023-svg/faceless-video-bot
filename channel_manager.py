@@ -48,7 +48,7 @@ _LOG_FILE = config.ASSETS_DIR / "published_log.json"
 _ACTIONS_LOG_FILE = config.ASSETS_DIR / "channel_manager_actions.json"
 
 SCOPES = [
-    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 
