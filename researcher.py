@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import re
 import time
 import traceback
 from pathlib import Path
@@ -211,6 +212,75 @@ def _call_gemini(client, prompt):
     raise last_error
 
 
+_trending_cache = {"titles": [], "fetched_at": None}
+
+
+def _fetch_trending_finance_titles(limit: int = 8) -> list:
+    """
+    Best-effort: pulls titles of currently popular personal-finance videos
+    on YouTube (last 7 days, US region) so the script prompt can lean
+    toward angles that are actually resonating right now. Cached in-memory
+    for this process's lifetime since trending topics don't meaningfully
+    change within the few minutes main.py takes to generate 3 videos.
+    Never raises.
+    """
+    import datetime as _dt
+
+    if _trending_cache["titles"] and _trending_cache["fetched_at"]:
+        age = (_dt.datetime.now(_dt.timezone.utc) - _trending_cache["fetched_at"]).total_seconds()
+        if age < 6 * 3600:
+            return _trending_cache["titles"]
+
+    try:
+        from youtube_uploader import authenticate_youtube
+        youtube = authenticate_youtube()
+        published_after = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        resp = youtube.search().list(
+            part="snippet", q="personal finance money tips saving investing",
+            type="video", order="viewCount", publishedAfter=published_after,
+            regionCode="US", maxResults=limit,
+        ).execute()
+        titles = [item["snippet"]["title"] for item in resp.get("items", [])]
+        _trending_cache["titles"] = titles
+        _trending_cache["fetched_at"] = _dt.datetime.now(_dt.timezone.utc)
+        if titles:
+            print(f"[+] Fetched {len(titles)} trending finance video titles for prompt inspiration.")
+        return titles
+    except Exception as e:
+        print(f"[i] Trending-topic fetch skipped (non-fatal): {e}")
+        return []
+
+
+_MAX_SCRIPT_WORDS = 65  # ~25 seconds at a natural ~155 words/minute speaking pace
+
+
+def _enforce_max_duration(script: str) -> str:
+    """
+    Gemini's '15-25 second' instruction is just a request — it doesn't
+    reliably keep the model from writing a much longer script. This
+    enforces it in code: if the script runs over budget, trims it down to
+    the last COMPLETE sentence that still fits, rather than cutting off
+    mid-sentence. Leaves short scripts untouched.
+    """
+    words = script.split()
+    if len(words) <= _MAX_SCRIPT_WORDS:
+        return script
+
+    sentences = re.split(r'(?<=[.!?])\s+', script.strip())
+    kept, word_count = [], 0
+    for sentence in sentences:
+        sentence_words = len(sentence.split())
+        if kept and word_count + sentence_words > _MAX_SCRIPT_WORDS:
+            break
+        kept.append(sentence)
+        word_count += sentence_words
+
+    trimmed = " ".join(kept) if kept else " ".join(words[:_MAX_SCRIPT_WORDS])
+    print(f"[i] Script ran long ({len(words)} words, ~{len(words)/155*60:.0f}s) — "
+          f"trimmed to {len(trimmed.split())} words (~{len(trimmed.split())/155*60:.0f}s).")
+    return trimmed
+
+
 def generate_script(topic_type="facts"):
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -226,19 +296,54 @@ def generate_script(topic_type="facts"):
 
         avoid_clause = ""
         if used_titles:
-            recent = ", ".join(used_titles[-10:])
-            avoid_clause = f" Do NOT repeat or closely resemble any of these previously used titles/topics: {recent}."
+            recent = ", ".join(used_titles[-20:])
+            avoid_clause = (
+                f" Do NOT repeat or closely resemble any of these previously covered titles/topics — "
+                f"this means not just avoiding the same words, but avoiding the same underlying idea "
+                f"or angle even if phrased differently: {recent}."
+            )
+
+        retention_clause = ""
+        try:
+            insights_path = Path(__file__).resolve().parent / "assets" / "retention_insights.json"
+            if insights_path.is_file():
+                insight = json.loads(insights_path.read_text())
+                dropoff = insight.get("typical_dropoff_second")
+                if dropoff:
+                    retention_clause = (
+                        f"\n\nIMPORTANT PACING NOTE: analysis of past videos on this channel shows "
+                        f"viewers tend to drop off heavily around the {dropoff:.0f}-second mark. Make sure "
+                        f"the script stays punchy and keeps delivering new information/stakes well before "
+                        f"that point — no lulls, no repeated ideas, no slow explanations."
+                    )
+        except Exception:
+            pass
+
+        trending_titles = _fetch_trending_finance_titles()
+        trending_clause = ""
+        if trending_titles:
+            trending_clause = (
+                "\n\nFor inspiration, here are titles of personal-finance videos that are "
+                "CURRENTLY getting a lot of views on YouTube (last 7 days). Do NOT copy them — "
+                "just notice which angles/hooks/formats seem to be resonating right now, and let "
+                "that inform your own original take:\n- " + "\n- ".join(trending_titles)
+            )
 
         prompt = (
             "You are a viral YouTube Shorts scriptwriter. Your scripts are fast-paced, punchy, and built "
             "to stop the scroll in the first 2 seconds. Short sentences. No filler. Every line earns its "
             "place or gets cut.\n\n"
-            f"Write a 30-45 second Short script about an astounding, lesser-known fact in the category of "
-            f"{category}.{avoid_clause}\n\n"
+            f"Write a TIGHT 15-25 second Short script (short scripts finish more often and get pushed "
+            f"harder by the algorithm — do not pad it out) about an astounding, lesser-known fact in "
+            f"the category of "
+            f"{category}.{avoid_clause}{retention_clause}{trending_clause}\n\n"
             "Requirements:\n"
             "- The VERY FIRST SENTENCE must make someone stop scrolling because they're shocked or "
             "instantly curious — lead with the single most surprising number, consequence, or claim in "
             "the whole script. Do NOT ease into it.\n"
+            "- The FIRST item in 'visual_scenes' must be the single most striking, attention-grabbing "
+            "visual in the whole script — it should visually punch as hard as the opening line does, "
+            "not a generic establishing shot. Save calmer/explanatory visuals for later scenes.\n"
             "- Banned opening patterns (these are boring, never use them): 'Did you know...', "
             "'Let's talk about...', 'Have you ever wondered...', any sentence that explains what the "
             "topic IS before revealing why it matters. The first sentence should make the topic's "
@@ -271,6 +376,8 @@ def generate_script(topic_type="facts"):
 
         result = json.loads(raw_text)
         result["category"] = category
+        if result.get("script"):
+            result["script"] = _enforce_max_duration(result["script"])
         _remember_title(result.get("title", ""))
         return result
     except Exception as e:
@@ -286,6 +393,7 @@ def discover_trending_topic():
 def get_fallback_script():
     used_titles = _load_used_titles()
     unused = [s for s in _FALLBACK_SCRIPTS if s["title"] not in used_titles]
-    choice = random.choice(unused or _FALLBACK_SCRIPTS)
+    choice = dict(random.choice(unused or _FALLBACK_SCRIPTS))  # copy — don't mutate the shared pool
+    choice["script"] = _enforce_max_duration(choice["script"])
     _remember_title(choice["title"])
     return choice
