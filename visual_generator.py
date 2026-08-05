@@ -1,6 +1,7 @@
 import requests
 import urllib.parse
 import traceback
+import random
 from pathlib import Path
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -41,9 +42,17 @@ def _fetch_stock_video(search_query: str, save_path: Path) -> bool:
         if not videos:
             return False
 
+        # Pick randomly among the top few results instead of always the #1
+        # match — otherwise a generic search_query (e.g. "shocked reaction")
+        # deterministically returns the SAME video every time it's searched,
+        # which is why the same clip/thumbnail kept showing up across
+        # different uploads. Some query variety comes from the script
+        # prompt, but this is the safety net for when it doesn't.
+        video_entry = random.choice(videos[:3]) if len(videos) >= 3 else videos[0]
+
         # Prefer a moderate-resolution vertical (portrait) mp4 file so we don't
         # download something huge or something in the wrong aspect ratio.
-        video_files = videos[0].get("video_files", [])
+        video_files = video_entry.get("video_files", [])
         candidates = [
             f for f in video_files
             if f.get("file_type") == "video/mp4" and f.get("width", 0) < f.get("height", 1)
@@ -82,7 +91,10 @@ def _fetch_stock_image(search_query: str, save_path: Path) -> bool:
         if not photos:
             return False
 
-        photo_url = photos[0]["src"]["portrait"]
+        # Same reasoning as the video search above — avoid always fetching
+        # the #1 result so generic queries don't produce identical images.
+        photo_entry = random.choice(photos[:3]) if len(photos) >= 3 else photos[0]
+        photo_url = photo_entry["src"]["portrait"]
         _download_file(photo_url, save_path)
         print(f"[+] Downloaded REAL stock IMAGE for: '{search_query}'")
         return True
