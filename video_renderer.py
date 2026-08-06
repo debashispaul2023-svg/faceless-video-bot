@@ -293,7 +293,7 @@ def _build_progress_bar(total_duration: float, target_w: int, target_h: int):
         return frame
 
     fill = (
-        VideoClip(make_frame=make_fill_frame, duration=total_duration)
+        VideoClip(frame_function=make_fill_frame, duration=total_duration)
         .with_position((0, target_h - _PROGRESS_BAR_HEIGHT))
     )
 
@@ -338,7 +338,7 @@ def _rule_sticker_clip(number: int, start_time: float, duration: float):
     alpha = frame[:, :, 3].astype("float32") / 255.0
 
     img_clip = ImageClip(rgb).with_duration(duration)
-    mask_clip = ImageClip(alpha, ismask=True).with_duration(duration)
+    mask_clip = ImageClip(alpha, is_mask=True).with_duration(duration))
     img_clip = img_clip.with_mask(mask_clip)
 
     pop_in = _RULE_STICKER_POP_IN_SECONDS
