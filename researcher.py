@@ -196,7 +196,7 @@ def _call_gemini_single_model(client, prompt, model_name):
 # "high demand" — this is NOT a quota or key problem, just that specific
 # model being busy), fall through to trying other Gemini models before
 # giving up and using the local fallback script.
-_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
 
 
 def _call_gemini(client, prompt):
