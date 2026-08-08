@@ -196,7 +196,14 @@ def _call_gemini_single_model(client, prompt, model_name):
 # "high demand" — this is NOT a quota or key problem, just that specific
 # model being busy), fall through to trying other Gemini models before
 # giving up and using the local fallback script.
-_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite"]
+_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash"]
+# NOTE: gemini-2.5-flash and gemini-2.0-flash were removed from this chain —
+# logs showed they permanently fail for this API key/project (2.5-flash:
+# 404 "no longer available to new users"; 2.0-flash: 429 quota=0 on the
+# free tier). Retrying dead models 3x each before giving up wasted ~20-30s
+# per video for zero benefit. If gemini-3.5-flash is ever deprecated too,
+# check https://ai.google.dev/gemini-api/docs/models for current model IDs
+# and add ONE replacement here after confirming it actually works for this key.
 
 
 def _call_gemini(client, prompt):
