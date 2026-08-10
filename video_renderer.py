@@ -11,6 +11,7 @@ from moviepy import (
     CompositeVideoClip, CompositeAudioClip, concatenate_videoclips,
     concatenate_audioclips, vfx, afx
 )
+from moviepy.audio.fx.MultiplyVolume import MultiplyVolume
 import config
 
 # moviepy>=2.0 REQUIRES an explicit font file path for TextClip — it will not
@@ -91,28 +92,30 @@ def _load_word_timings(audio_path: Path):
 
 def _build_captions(narration_text: str, total_duration: float, audio_path: Path):
     """
-    Builds karaoke-style captions: a few words are shown on screen together
-    (in white), and the specific word being spoken right now is highlighted
-    in yellow — just like popular Shorts/Reels captions.
-
-    Uses REAL per-word timing from edge-tts's WordBoundary events when
-    available (see tts_engine.py); otherwise falls back to splitting the
-    total duration evenly across words, which is close enough to still look
-    good but won't be frame-perfect.
+    Builds dynamic word-by-word bold animated subtitles.
+    Instead of showing a chunk of words, it displays one or two words at a time,
+    scaled up slightly and bold, with a pop-in animation to grab attention.
     """
-    words = narration_text.split()
+    # Remove any SFX cues before word splitting
+    clean_text = re.sub(r'\[SFX:[^\]]+\]', '', narration_text)
+    words = clean_text.split()
     if not words:
         return []
 
     font_path = _resolve_font_path()
-    font = ImageFont.truetype(font_path, _CAPTION_FONT_SIZE)
-    space_w = font.getlength(" ")
 
     timings = _load_word_timings(audio_path)
     if timings and len(timings) >= len(words) * 0.6:
-        # Good enough real timing data — use it directly (trusts edge-tts's
-        # own word segmentation rather than forcing it to match `words`).
-        word_times = [(t.get("text", "").strip() or "", t["start"], t["end"]) for t in timings]
+        # Some word timings might contain SFX cues in text if the TTS read it (though it shouldn't)
+        # We clean them out just in case
+        cleaned_timings = []
+        for t in timings:
+            t_text = t.get("text", "").strip()
+            # Ignore [SFX: ...] if it got captured
+            if re.match(r'^\[SFX:', t_text) or t_text == "":
+                continue
+            cleaned_timings.append((t_text, t["start"], t["end"]))
+        word_times = cleaned_timings
     else:
         # Fallback: spread words evenly across the narration's duration.
         per_word = total_duration / len(words)
@@ -121,19 +124,25 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
     clips = []
     y_pos = 1350
 
-    # Build chunks that respect sentence boundaries: a chunk can be shorter
-    # than _CAPTION_CHUNK_SIZE if a word ends a sentence, so on-screen text
-    # never mixes the tail of one sentence with the start of the next
-    # (previously produced confusing groups like "RATE. THIRD, HIJACK").
+    # We will display chunks of 1 or 2 words based on length.
     caption_chunks = []
     current_chunk = []
+    current_char_count = 0
     for word_entry in word_times:
-        current_chunk.append(word_entry)
-        word_text = word_entry[0].strip()
-        ends_sentence = bool(re.search(r'[.!?]+$', word_text)) or word_text == "..."
-        if len(current_chunk) >= _CAPTION_CHUNK_SIZE or ends_sentence:
+        word_text = word_entry[0]
+        # Only group if it's very short, max 2 words
+        if len(current_chunk) == 0:
+            current_chunk.append(word_entry)
+            current_char_count += len(word_text)
+        elif len(current_chunk) < 2 and (current_char_count + len(word_text)) < 12:
+            current_chunk.append(word_entry)
             caption_chunks.append(current_chunk)
             current_chunk = []
+            current_char_count = 0
+        else:
+            caption_chunks.append(current_chunk)
+            current_chunk = [word_entry]
+            current_char_count = len(word_text)
     if current_chunk:
         caption_chunks.append(current_chunk)
 
@@ -141,48 +150,29 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
         if not chunk:
             continue
 
-        chunk_words_upper = [w.upper() for (w, _, _) in chunk]
-        widths = [font.getlength(w) for w in chunk_words_upper]
-        total_w = sum(widths) + space_w * max(0, len(chunk) - 1)
-        start_x = (config.VIDEO_WIDTH - total_w) / 2
+        chunk_text = " ".join([w[0].upper() for w in chunk])
+        start_time = chunk[0][1]
+        end_time = chunk[-1][2]
+        duration = max(0.05, end_time - start_time)
 
-        chunk_start_time = chunk[0][1]
-        chunk_end_time = chunk[-1][2]
-        chunk_duration = max(0.05, chunk_end_time - chunk_start_time)
+        # Word-by-word bold animated subtitle:
+        # A pop-in animation effect for each word chunk
+        base_clip = TextClip(
+            font=font_path, text=chunk_text, font_size=_CAPTION_FONT_SIZE,
+            color='white', stroke_color='black', stroke_width=4,
+            method='label'
+        ).with_position(('center', y_pos)).with_start(start_time).with_duration(duration)
 
-        # Base layer: the whole chunk, visible in white for its full duration.
-        base_text = " ".join(chunk_words_upper)
-        base_clip = (
-            TextClip(
-                font=font_path, text=base_text, font_size=_CAPTION_FONT_SIZE,
-                color='white', stroke_color='black', stroke_width=4,
-                method='label'
-            )
-            .with_position((start_x, y_pos))
-            .with_start(chunk_start_time)
-            .with_duration(chunk_duration)
-        )
-        clips.append(base_clip)
+        # Animation: scale up slightly in the first 0.1s
+        pop_in = 0.1
+        def anim_scale(t):
+            if t < pop_in:
+                return 0.8 + 0.2 * (t / pop_in)
+            return 1.0
 
-        # Highlight layer: each word, in yellow, ONLY during its own slice —
-        # sits on top of (and visually replaces) the white word beneath it.
-        cursor_x = start_x
-        for (word, w_start, w_end), width in zip(chunk, widths):
-            if not word:
-                cursor_x += width + space_w
-                continue
-            highlight_clip = (
-                TextClip(
-                    font=font_path, text=word.upper(), font_size=_CAPTION_FONT_SIZE,
-                    color='yellow', stroke_color='black', stroke_width=4,
-                    method='label'
-                )
-                .with_position((cursor_x, y_pos))
-                .with_start(w_start)
-                .with_duration(max(0.05, w_end - w_start))
-            )
-            clips.append(highlight_clip)
-            cursor_x += width + space_w
+        animated_clip = base_clip.resized(anim_scale).with_position(('center', y_pos))
+
+        clips.append(animated_clip)
 
     return clips
 
@@ -210,7 +200,7 @@ def _pick_background_music(duration: float):
             music.close()
             music = concatenate_audioclips([AudioFileClip(str(track_path)) for _ in range(loops_needed)])
         music = music.subclipped(0, duration)
-        music = music.with_effects([afx.MultiplyVolume(config.BGM_VOLUME)])
+        music = music.with_effects([MultiplyVolume(config.BGM_VOLUME)])
         print(f"[+] Added background music: {track_path.name}")
         return music
     except Exception as e:
@@ -388,6 +378,94 @@ def _apply_crossfades(clips: list, crossfade_duration: float):
     return concatenate_videoclips(faded, method="compose", padding=-crossfade_duration)
 
 
+
+def _apply_sfx_and_ducking(narration_text: str, total_duration: float, bgm_clip, narration_clip):
+    """
+    Parses [SFX: <name>] cues from the narration script, inserts the corresponding
+    sound effect from assets/sfx/, and applies auto audio ducking to the BGM.
+    """
+    sfx_dir = config.ASSETS_DIR / "sfx"
+    sfx_dir.mkdir(exist_ok=True)
+
+    # Simple regex to find [SFX: something]
+    # We need to map these cues to approximate timestamps.
+    # Since we don't have perfect per-cue timing, we estimate based on word splits.
+
+    # We will split by words and cues
+    tokens = re.findall(r'(\[SFX:\s*[^\]]+\]|\S+)', narration_text)
+
+    word_count = len([t for t in tokens if not t.startswith("[SFX:")])
+    if word_count == 0:
+        return bgm_clip, []
+
+    per_word = total_duration / word_count
+
+    current_time = 0.0
+    sfx_clips = []
+    ducking_intervals = []
+
+    for token in tokens:
+        if token.startswith("[SFX:"):
+            # Extract name
+            match = re.search(r'\[SFX:\s*([^\]]+)\]', token)
+            if match:
+                sfx_name = match.group(1).strip().lower()
+                # Find matching file (e.g. pop.mp3, swoosh.wav)
+                sfx_file = None
+                for ext in [".mp3", ".wav"]:
+                    candidate = sfx_dir / f"{sfx_name}{ext}"
+                    if candidate.is_file():
+                        sfx_file = candidate
+                        break
+
+                if sfx_file:
+                    try:
+                        sfx_clip = AudioFileClip(str(sfx_file)).with_start(current_time)
+                        sfx_clips.append(sfx_clip)
+                        # Duck BGM around this SFX (0.5s before to 0.5s after)
+                        duck_start = max(0.0, current_time - 0.2)
+                        duck_end = current_time + sfx_clip.duration + 0.2
+                        ducking_intervals.append((duck_start, duck_end))
+                    except Exception as e:
+                        print(f"[!] Failed to load SFX {sfx_file}: {e}")
+        else:
+            current_time += per_word
+
+    # Apply ducking to BGM
+    if bgm_clip and ducking_intervals:
+        def duck_volume(t):
+            import numpy as np
+            # t can be a scalar or a numpy array (for audio)
+            t_is_scalar = np.isscalar(t)
+            t = np.atleast_1d(t)
+            vols = np.full(t.shape, config.BGM_VOLUME, dtype=float)
+
+            for start, end in ducking_intervals:
+                fade = 0.1
+                # Where we are fully ducked
+                fully_ducked = (t >= start + fade) & (t <= end - fade)
+                vols[fully_ducked] = config.BGM_VOLUME * 0.3
+
+                # Where we are fading out (volume goes down)
+                fading_out = (t >= start) & (t < start + fade)
+                if np.any(fading_out):
+                    vols[fading_out] = config.BGM_VOLUME * (1.0 - 0.7 * ((t[fading_out] - start) / fade))
+
+                # Where we are fading in (volume goes up)
+                fading_in = (t > end - fade) & (t <= end)
+                if np.any(fading_in):
+                    vols[fading_in] = config.BGM_VOLUME * (0.3 + 0.7 * ((t[fading_in] - (end - fade)) / fade))
+
+            return vols[0] if t_is_scalar else vols
+
+        # MoviePy 2.x uses multiply_volume
+        bgm_clip = bgm_clip.with_effects([MultiplyVolume(duck_volume)])
+    elif bgm_clip:
+        bgm_clip = bgm_clip.with_effects([MultiplyVolume(config.BGM_VOLUME)])
+
+    return bgm_clip, sfx_clips
+
+
 def render_final_video(image_paths: list, audio_path: Path, narration_text: str, output_filename: str) -> Path:
     """
     Renders the final video: real stock video clips play as-is, still images
@@ -459,16 +537,20 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     # above can leave the video a hair longer than the audio).
     video_clip = video_clip.subclipped(0, narration_clip.duration)
 
-    # --- Audio: mix narration (full volume) with background music (quiet) ---
-    bgm_clip = _pick_background_music(narration_clip.duration)
+    # --- Audio: mix narration (full volume) with background music (quiet) and SFX ---
+    raw_bgm_clip = _pick_background_music(narration_clip.duration)
+    bgm_clip, sfx_clips = _apply_sfx_and_ducking(narration_text, narration_clip.duration, raw_bgm_clip, narration_clip)
+
+    audio_tracks = [narration_clip]
     if bgm_clip is not None:
-        try:
-            final_audio = CompositeAudioClip([narration_clip, bgm_clip])
-        except Exception as e:
-            print(f"[!] Mixing background music failed ({e}); using narration only.")
-            traceback.print_exc()
-            final_audio = narration_clip
-    else:
+        audio_tracks.append(bgm_clip)
+    audio_tracks.extend(sfx_clips)
+
+    try:
+        final_audio = CompositeAudioClip(audio_tracks)
+    except Exception as e:
+        print(f"[!] Mixing audio tracks failed ({e}); using narration only.")
+        traceback.print_exc()
         final_audio = narration_clip
 
     video_with_audio = video_clip.with_audio(final_audio)
