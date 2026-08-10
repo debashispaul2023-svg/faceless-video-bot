@@ -26,6 +26,8 @@ ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 ELEVENLABS_BASE_URL = "https://api.elevenlabs.io/v1"
 
 
+import re
+
 def _try_one_elevenlabs_key(api_key: str, text: str, output_path: Path):
     """
     Attempts to generate the voiceover with a single ElevenLabs API key,
@@ -36,12 +38,16 @@ def _try_one_elevenlabs_key(api_key: str, text: str, output_path: Path):
     exceeded (429), server error, network timeout, whatever — so the
     caller's rotation loop knows to move on to the next key.
     """
+
+    # Remove SSML <break> tags since ElevenLabs reads them literally
+    clean_text = re.sub(r'<break[^>]*>', '', text)
+
     url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{ELEVENLABS_VOICE_ID}/with-timestamps"
     headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
     payload = {
-        "text": text,
+        "text": clean_text,
         "model_id": ELEVENLABS_MODEL_ID,
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+        "voice_settings": {"stability": 0.35, "similarity_boost": 0.85},
     }
     params = {"output_format": "mp3_44100_128"}
 
