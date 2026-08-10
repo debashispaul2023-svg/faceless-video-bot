@@ -38,10 +38,14 @@ def _try_one_elevenlabs_key(api_key: str, text: str, output_path: Path):
     """
     url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{ELEVENLABS_VOICE_ID}/with-timestamps"
     headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+    # Strip <break> tags just in case the LLM outputs them despite instructions
+    import re
+    clean_text = re.sub(r'<break[^>]*>', '', text).strip()
+
     payload = {
-        "text": text,
+        "text": clean_text,
         "model_id": ELEVENLABS_MODEL_ID,
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
     }
     params = {"output_format": "mp3_44100_128"}
 
