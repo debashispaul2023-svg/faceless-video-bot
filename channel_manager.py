@@ -53,10 +53,6 @@ APPLY_CHANGES = os.getenv("CHANNEL_MANAGER_APPLY_CHANGES", "false").lower() == "
 _LOG_FILE = config.ASSETS_DIR / "published_log.json"
 _ACTIONS_LOG_FILE = config.ASSETS_DIR / "channel_manager_actions.json"
 
-SCOPES = [
-    "https://www.googleapis.com/auth/youtube",
-    "https://www.googleapis.com/auth/yt-analytics.readonly",
-]
 
 # How far below the channel's own median a video has to fall to count as
 # "underperforming" (0.4 = less than 40% of the median views).

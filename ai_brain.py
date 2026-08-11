@@ -1,8 +1,60 @@
 import os
 import json
 import traceback
+import random
+from pathlib import Path
 from google import genai
 from google.genai import types
+
+_TOPIC_CATEGORIES = [
+    "budgeting and saving",
+    "investing and wealth building",
+    "debt management",
+    "credit score hacks",
+    "passive income"
+]
+
+def _get_category():
+    try:
+        scores_file = Path("assets/category_scores.json")
+        if scores_file.exists():
+            scores = json.loads(scores_file.read_text())
+            weights = [max(scores.get(cat, 1.0), 0.1) for cat in _TOPIC_CATEGORIES]
+            return random.choices(_TOPIC_CATEGORIES, weights=weights, k=1)[0]
+    except Exception:
+        pass
+    return random.choice(_TOPIC_CATEGORIES)
+
+def _get_avoid_clause():
+    try:
+        history_file = Path("assets/used_topics.json")
+        if history_file.exists():
+            data = json.loads(history_file.read_text())
+            titles = data.get("titles", [])
+            if titles:
+                recent = ", ".join(titles[-20:])
+                return f" Do NOT repeat or closely resemble any of these previously covered titles/topics: {recent}."
+    except Exception:
+        pass
+    return ""
+
+def _record_title(title):
+    try:
+        history_file = Path("assets/used_topics.json")
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+
+        titles = []
+        if history_file.exists():
+            data = json.loads(history_file.read_text())
+            titles = data.get("titles", [])
+
+        titles.append(title)
+        titles = titles[-30:] # keep bounded
+
+        history_file.write_text(json.dumps({"titles": titles}, indent=2))
+    except Exception:
+        pass
+
 
 def generate_video_blueprint() -> dict:
     """
@@ -16,12 +68,16 @@ def generate_video_blueprint() -> dict:
     try:
         client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=180.0))
 
-        prompt = """
+        category = _get_category()
+        avoid_clause = _get_avoid_clause()
+
+        prompt = f"""
         You are an elite USA Personal Finance YouTube Shorts architect.
         Generate a complete video blueprint in strict JSON format.
 
-        Channel Niche: USA Personal Finance (Credit cards, High-yield savings, Tax hacks, Passive income, Wealth building).
-        Target Audience: USA (High CPM/RPM focused).
+        Channel Niche: USA Personal Finance.
+        Focus specifically on this sub-category: {category}.
+        Target Audience: USA (High CPM/RPM focused).{avoid_clause}\n
 
         STRICT Output JSON Schema:
         {
@@ -54,13 +110,14 @@ def generate_video_blueprint() -> dict:
         substantive and accurate claims. DO NOT generate repetitious content; each script must
         have a unique angle even within the same category. DO NOT output SSML `<break>` tags in the script;
         enforce natural speech pacing using ONLY proper punctuation (dashes, ellipses, commas).
+        CRITICAL: The number of items in the `visual_scenes` array MUST STRICTLY MATCH the number of distinct sentence segments/beats in the `script`. Do not provide fewer visual scenes than segments.
 
         Return ONLY a valid JSON object matching the exact schema above.
         """
 
         # We will use gemini-3.5-flash
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=prompt
         )
 
@@ -71,6 +128,8 @@ def generate_video_blueprint() -> dict:
             raw_text = raw_text[3:-3].strip()
 
         blueprint = json.loads(raw_text)
+        if "metadata" in blueprint and "title" in blueprint["metadata"]:
+            _record_title(blueprint["metadata"]["title"])
         return blueprint
 
     except Exception as e:

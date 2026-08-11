@@ -12,8 +12,29 @@ import analytics_feedback
 def process_single_short(index: int, day_offset: int, target_hour: int, target_minute: int):
     print(f"\n==================== GENERATING SHORT #{index + 1} ====================")
 
-    # 1. Generate Blueprint via AI Brain
-    blueprint = generate_video_blueprint()
+    # 1. Generate Blueprint via AI Brain (with fallback)
+    try:
+        blueprint = generate_video_blueprint()
+        category = blueprint.get("metadata", {}).get("tags", ["personal finance"])[0]
+    except Exception as e:
+        print(f"[!] AI Brain generation failed ({e}), using local fallback blueprint.")
+        blueprint = {
+            "metadata": {
+                "title": "4 Rules To Stop Being Broke",
+                "description": "Follow these 4 money rules before you spend another dollar. #finance #budgeting",
+                "tags": ["budgeting", "saving money", "shorts"]
+            },
+            "script": "Most people who save money are STILL broke, and it's because they follow zero real rules. Rule one, pay yourself first. Rule two, track every dollar for one week. Rule three, automate your savings so willpower never matters. Rule four, and this CHANGES EVERYTHING, the 24-hour rule before any big purchase. Comment if you actually follow these.",
+            "visual_scenes": [
+                {"search_query": "empty wallet", "ai_fallback_prompt": "person looking shocked at empty wallet, cinematic"},
+                {"search_query": "paying bills online", "ai_fallback_prompt": "paying bills online, cinematic"},
+                {"search_query": "receipt track", "ai_fallback_prompt": "tracking receipts on paper, cinematic"},
+                {"search_query": "robot automation", "ai_fallback_prompt": "robot saving money, cinematic"},
+                {"search_query": "clock 24 hours", "ai_fallback_prompt": "glowing neon clock, cinematic"},
+                {"search_query": "phone comments", "ai_fallback_prompt": "typing on smartphone comment section, cinematic"}
+            ]
+        }
+        category = "budgeting and saving"
 
     # Restructure for legacy compatibility in uploaders
     script_data = {
@@ -21,7 +42,7 @@ def process_single_short(index: int, day_offset: int, target_hour: int, target_m
         "description": blueprint.get("metadata", {}).get("description", ""),
         "hashtags": blueprint.get("metadata", {}).get("tags", ["shorts"]),
         "script": blueprint.get("script", ""),
-        "category": "personal finance"
+        "category": category
     }
 
     # 2. TTS Generation

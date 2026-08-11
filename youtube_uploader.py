@@ -9,7 +9,6 @@ from googleapiclient.http import MediaFileUpload
 from thumbnail_generator import generate_thumbnail
 import config
 
-SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
 # The ONLY three times a video is ever allowed to publish. Nothing in this
 # file ever schedules outside these exact clock times (IST).
