@@ -39,8 +39,9 @@ def _try_one_elevenlabs_key(api_key: str, text: str, output_path: Path):
     url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{ELEVENLABS_VOICE_ID}/with-timestamps"
     headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
     # Strip <break> tags just in case the LLM outputs them despite instructions
-    import re
-    clean_text = re.sub(r'<break[^>]*>', '', text).strip()
+    clean_text = re.sub(r'<break[^>]*>', '', text)
+    # Also strip [SFX: cue] tags so they aren't read aloud
+    clean_text = re.sub(r'\[SFX:\s*[^\]]+\]', '', clean_text).strip()
 
     payload = {
         "text": clean_text,
@@ -102,6 +103,10 @@ def _build_word_timings_from_elevenlabs(text: str, alignment: dict):
 
 
 async def _synthesize_with_edge_tts(text: str, output_path: Path):
+    import re
+    # Strip tags from Edge TTS fallback too
+    text = re.sub(r'<break[^>]*>', '', text)
+    text = re.sub(r'\[SFX:\s*[^\]]+\]', '', text).strip()
     """
     The PREVIOUS voiceover system (Microsoft Edge Neural TTS, free, no API
     key needed) — used as the fallback when every ElevenLabs key fails.

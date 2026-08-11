@@ -379,38 +379,58 @@ def _apply_crossfades(clips: list, crossfade_duration: float):
 
 
 
-def _apply_sfx_and_ducking(narration_text: str, total_duration: float, bgm_clip, narration_clip):
+def _apply_sfx_and_ducking(narration_text: str, total_duration: float, bgm_clip, narration_clip, audio_path: Path):
     """
-    Parses [SFX: <name>] cues from the narration script, inserts the corresponding
-    sound effect from assets/sfx/, and applies auto audio ducking to the BGM.
+    Parses [SFX: <name>] cues, inserts the corresponding sound effect,
+    and applies auto audio ducking to the BGM whenever voiceover or SFX is active.
     """
     sfx_dir = config.ASSETS_DIR / "sfx"
     sfx_dir.mkdir(exist_ok=True)
 
-    # Simple regex to find [SFX: something]
-    # We need to map these cues to approximate timestamps.
-    # Since we don't have perfect per-cue timing, we estimate based on word splits.
+    timings = _load_word_timings(audio_path)
 
-    # We will split by words and cues
     tokens = re.findall(r'(\[SFX:\s*[^\]]+\]|\S+)', narration_text)
-
     word_count = len([t for t in tokens if not t.startswith("[SFX:")])
-    if word_count == 0:
-        return bgm_clip, []
 
-    per_word = total_duration / word_count
+    # Map words to actual timestamps or fallback
+    if timings and len(timings) >= word_count * 0.6:
+        # Use real timings
+        word_starts = [t["start"] for t in timings]
+        word_ends = [t["end"] for t in timings]
+    else:
+        per_word = total_duration / max(1, word_count)
+        word_starts = [i * per_word for i in range(word_count)]
+        word_ends = [(i + 1) * per_word for i in range(word_count)]
 
-    current_time = 0.0
+    current_word_idx = 0
     sfx_clips = []
     ducking_intervals = []
 
+    # 1. Add voiceover ducking intervals (combine close words)
+    for start, end in zip(word_starts, word_ends):
+        if not ducking_intervals:
+            ducking_intervals.append([start, end])
+        else:
+            # If gap is less than 0.5s, keep ducking
+            if start - ducking_intervals[-1][1] < 0.5:
+                ducking_intervals[-1][1] = end
+            else:
+                ducking_intervals.append([start, end])
+
+    # 2. Add SFX and their ducking intervals
     for token in tokens:
         if token.startswith("[SFX:"):
-            # Extract name
             match = re.search(r'\[SFX:\s*([^\]]+)\]', token)
             if match:
                 sfx_name = match.group(1).strip().lower()
-                # Find matching file (e.g. pop.mp3, swoosh.wav)
+
+                # Estimate time: right before the *next* word starts, or at current word end
+                sfx_time = 0.0
+                if current_word_idx < len(word_starts):
+                    sfx_time = word_starts[current_word_idx]
+                elif len(word_ends) > 0:
+                    sfx_time = word_ends[-1]
+
                 sfx_file = None
                 for ext in [".mp3", ".wav"]:
                     candidate = sfx_dir / f"{sfx_name}{ext}"
@@ -420,48 +440,48 @@ def _apply_sfx_and_ducking(narration_text: str, total_duration: float, bgm_clip,
 
                 if sfx_file:
                     try:
-                        sfx_clip = AudioFileClip(str(sfx_file)).with_start(current_time)
+                        sfx_clip = AudioFileClip(str(sfx_file)).with_start(sfx_time)
                         sfx_clips.append(sfx_clip)
-                        # Duck BGM around this SFX (0.5s before to 0.5s after)
-                        duck_start = max(0.0, current_time - 0.2)
-                        duck_end = current_time + sfx_clip.duration + 0.2
-                        ducking_intervals.append((duck_start, duck_end))
+
+                        # Add ducking for this SFX
+                        ducking_intervals.append([sfx_time - 0.2, sfx_time + sfx_clip.duration + 0.2])
                     except Exception as e:
                         print(f"[!] Failed to load SFX {sfx_file}: {e}")
         else:
-            current_time += per_word
+            current_word_idx += 1
 
     # Apply ducking to BGM
-    if bgm_clip and ducking_intervals:
+    if bgm_clip:
         def duck_volume(t):
             import numpy as np
-            # t can be a scalar or a numpy array (for audio)
             t_is_scalar = np.isscalar(t)
             t = np.atleast_1d(t)
-            vols = np.full(t.shape, config.BGM_VOLUME, dtype=float)
+            vols = np.full(t.shape, 1.0, dtype=float)
 
             for start, end in ducking_intervals:
-                fade = 0.1
-                # Where we are fully ducked
-                fully_ducked = (t >= start + fade) & (t <= end - fade)
-                vols[fully_ducked] = config.BGM_VOLUME * 0.3
+                fade = 0.2
 
-                # Where we are fading out (volume goes down)
+                # Create a temporary array for this interval's ducking curve
+                interval_vols = np.full(t.shape, 1.0, dtype=float)
+
+                fully_ducked = (t >= start + fade) & (t <= end - fade)
+                interval_vols[fully_ducked] = 0.2
+
                 fading_out = (t >= start) & (t < start + fade)
                 if np.any(fading_out):
-                    vols[fading_out] = config.BGM_VOLUME * (1.0 - 0.7 * ((t[fading_out] - start) / fade))
+                    interval_vols[fading_out] = 1.0 - 0.8 * ((t[fading_out] - start) / fade)
 
-                # Where we are fading in (volume goes up)
                 fading_in = (t > end - fade) & (t <= end)
                 if np.any(fading_in):
-                    vols[fading_in] = config.BGM_VOLUME * (0.3 + 0.7 * ((t[fading_in] - (end - fade)) / fade))
+                    interval_vols[fading_in] = 0.2 + 0.8 * ((t[fading_in] - (end - fade)) / fade)
+
+                # Take the minimum volume between existing ducking and this new interval
+                # so overlapping voiceover and SFX don't cause volume spikes
+                vols = np.minimum(vols, interval_vols)
 
             return vols[0] if t_is_scalar else vols
 
-        # MoviePy 2.x uses multiply_volume
         bgm_clip = bgm_clip.with_effects([MultiplyVolume(duck_volume)])
-    elif bgm_clip:
-        bgm_clip = bgm_clip.with_effects([MultiplyVolume(config.BGM_VOLUME)])
 
     return bgm_clip, sfx_clips
 
@@ -539,7 +559,7 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
 
     # --- Audio: mix narration (full volume) with background music (quiet) and SFX ---
     raw_bgm_clip = _pick_background_music(narration_clip.duration)
-    bgm_clip, sfx_clips = _apply_sfx_and_ducking(narration_text, narration_clip.duration, raw_bgm_clip, narration_clip)
+    bgm_clip, sfx_clips = _apply_sfx_and_ducking(narration_text, narration_clip.duration, raw_bgm_clip, narration_clip, audio_path)
 
     audio_tracks = [narration_clip]
     if bgm_clip is not None:

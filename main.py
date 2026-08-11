@@ -1,6 +1,6 @@
 import time
 import traceback
-from researcher import generate_script
+from ai_brain import generate_video_blueprint
 from tts_engine import generate_voiceover
 from visual_generator import generate_visual_assets
 from video_renderer import render_final_video
@@ -12,12 +12,25 @@ import analytics_feedback
 def process_single_short(index: int, day_offset: int, target_hour: int, target_minute: int):
     print(f"\n==================== GENERATING SHORT #{index + 1} ====================")
 
-    script_data = generate_script()
+    # 1. Generate Blueprint via AI Brain
+    blueprint = generate_video_blueprint()
 
+    # Restructure for legacy compatibility in uploaders
+    script_data = {
+        "title": blueprint.get("metadata", {}).get("title", "Automated Short"),
+        "description": blueprint.get("metadata", {}).get("description", ""),
+        "hashtags": blueprint.get("metadata", {}).get("tags", ["shorts"]),
+        "script": blueprint.get("script", ""),
+        "category": "personal finance"
+    }
+
+    # 2. TTS Generation
     audio_path = generate_voiceover(script_data["script"], output_filename=f"voiceover_{index}.mp3")
 
-    images = generate_visual_assets(script_data.get("visual_scenes", []))
+    # 3. Visual Assets Generation
+    images = generate_visual_assets(blueprint.get("visual_scenes", []))
 
+    # 4. Final Video Rendering (Subtitles + SFX)
     final_video_path = render_final_video(
         image_paths=images,
         audio_path=audio_path,

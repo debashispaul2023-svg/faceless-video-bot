@@ -148,8 +148,9 @@ def generate_visual_assets(visual_scenes: list) -> list:
             search_query = scene[:40]
             ai_prompt = scene
         else:
-            search_query = scene.get("search_query") or scene.get("ai_prompt", "")[:40]
-            ai_prompt = scene.get("ai_prompt") or scene.get("search_query", "")
+            # Check for new ai_brain.py schema keys first, then fallback to legacy keys
+            search_query = scene.get("broll_search_query") or scene.get("search_query") or scene.get("ai_fallback_prompt") or scene.get("ai_prompt", "")[:40]
+            ai_prompt = scene.get("ai_fallback_prompt") or scene.get("ai_prompt") or scene.get("broll_search_query") or scene.get("search_query", "")
 
         if not search_query and not ai_prompt:
             print(f"[!] Scene {idx} has no usable query/prompt, skipping.")
