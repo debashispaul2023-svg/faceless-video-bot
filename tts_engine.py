@@ -1,3 +1,4 @@
+import re
 import os
 import json
 import base64
@@ -103,7 +104,6 @@ def _build_word_timings_from_elevenlabs(text: str, alignment: dict):
 
 
 async def _synthesize_with_edge_tts(text: str, output_path: Path):
-    import re
     # Strip tags from Edge TTS fallback too
     text = re.sub(r'<break[^>]*>', '', text)
     text = re.sub(r'\[SFX:\s*[^\]]+\]', '', text).strip()
