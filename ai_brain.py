@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import traceback
 from google import genai
 from google.genai import types
@@ -58,22 +59,21 @@ def generate_video_blueprint() -> dict:
         Return ONLY a valid JSON object matching the exact schema above.
         """
 
-        # We will use gemini-3.5-flash
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
-                http_options=types.HttpOptions(timeout=30000)
+                response_mime_type="application/json",
+                http_options=types.HttpOptions(timeout=60.0)
             )
         )
 
         raw_text = response.text.strip()
-        if raw_text.startswith("```json"):
-            raw_text = raw_text[7:-3].strip()
-        elif raw_text.startswith("```"):
-            raw_text = raw_text[3:-3].strip()
+        
+        # Regex parsing to clear backticks safely
+        clean_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text, flags=re.MULTILINE).strip()
 
-        blueprint = json.loads(raw_text)
+        blueprint = json.loads(clean_json)
         return blueprint
 
     except Exception as e:
