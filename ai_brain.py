@@ -14,7 +14,7 @@ def generate_video_blueprint() -> dict:
         raise ValueError("GEMINI_API_KEY is missing/empty in the environment.")
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=180.0))
 
         prompt = """
         You are an elite USA Personal Finance YouTube Shorts architect.
@@ -61,10 +61,7 @@ def generate_video_blueprint() -> dict:
         # We will use gemini-3.5-flash
         response = client.models.generate_content(
             model="gemini-1.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                http_options=types.HttpOptions(timeout=30000)
-            )
+            contents=prompt
         )
 
         raw_text = response.text.strip()
