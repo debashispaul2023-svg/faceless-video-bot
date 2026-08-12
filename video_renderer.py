@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import re
 import traceback
 from pathlib import Path
 import numpy as np
@@ -120,8 +121,23 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
     clips = []
     y_pos = 1350
 
-    for chunk_start_idx in range(0, len(word_times), _CAPTION_CHUNK_SIZE):
-        chunk = word_times[chunk_start_idx: chunk_start_idx + _CAPTION_CHUNK_SIZE]
+    # Build chunks that respect sentence boundaries: a chunk can be shorter
+    # than _CAPTION_CHUNK_SIZE if a word ends a sentence, so on-screen text
+    # never mixes the tail of one sentence with the start of the next
+    # (previously produced confusing groups like "RATE. THIRD, HIJACK").
+    caption_chunks = []
+    current_chunk = []
+    for word_entry in word_times:
+        current_chunk.append(word_entry)
+        word_text = word_entry[0].strip()
+        ends_sentence = bool(re.search(r'[.!?]+$', word_text)) or word_text == "..."
+        if len(current_chunk) >= _CAPTION_CHUNK_SIZE or ends_sentence:
+            caption_chunks.append(current_chunk)
+            current_chunk = []
+    if current_chunk:
+        caption_chunks.append(current_chunk)
+
+    for chunk in caption_chunks:
         if not chunk:
             continue
 

@@ -196,7 +196,14 @@ def _call_gemini_single_model(client, prompt, model_name):
 # "high demand" — this is NOT a quota or key problem, just that specific
 # model being busy), fall through to trying other Gemini models before
 # giving up and using the local fallback script.
-_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+_MODEL_FALLBACK_CHAIN = ["gemini-3.5-flash"]
+# NOTE: gemini-2.5-flash and gemini-2.0-flash were removed from this chain —
+# logs showed they permanently fail for this API key/project (2.5-flash:
+# 404 "no longer available to new users"; 2.0-flash: 429 quota=0 on the
+# free tier). Retrying dead models 3x each before giving up wasted ~20-30s
+# per video for zero benefit. If gemini-3.5-flash is ever deprecated too,
+# check https://ai.google.dev/gemini-api/docs/models for current model IDs
+# and add ONE replacement here after confirming it actually works for this key.
 
 
 def _call_gemini(client, prompt):
@@ -342,10 +349,18 @@ def generate_script(topic_type="facts"):
             "STRICT SCRIPT STRUCTURE:\n"
             "1. THE HOOK (first 3 seconds): a high-stakes, bold psychological hook that forces "
             "viewers to freeze — lead with the single most shocking claim, number, or consequence "
-            "in the whole script. Style example: 'Smart people NEVER stay broke because they follow "
-            "these 4 money rules. Tell me in the comments if you follow rule number 4!' Do NOT ease "
-            "into it, and never open with 'Did you know...', 'Let's talk about...', or 'Have you "
-            "ever wondered...'.\n"
+            "in the whole script. Pick WHICHEVER of these techniques fits the topic best (vary it "
+            "across scripts, don't always use the same one):\n"
+            "   a) Counter-intuitive fact: challenge something the viewer assumes is true. Style "
+            "example: 'Smart people NEVER stay broke because they follow these 4 money rules.'\n"
+            "   b) Promise of reward: tell them exactly what they'll walk away knowing. Style "
+            "example: 'By the end of this, you'll know the exact trick the wealthy use to dodge "
+            "this penalty — and it takes 30 seconds to set up.'\n"
+            "   c) Everyday-economics comparison: tie an abstract money concept to something small "
+            "and relatable. Style example: 'Your morning coffee habit is quietly costing you fifty "
+            "thousand dollars.'\n"
+            "Do NOT ease into it, and never open with 'Did you know...', 'Let's talk about...', or "
+            "'Have you ever wondered...'.\n"
             "2. FOUR DISTINCT FINANCIAL RULES: ultra-concise, practical money tips (rules 1-3), "
             "each one earning its place. RULE 4 is the single most important, game-changing rule — "
             "build a tiny dramatic pause (using '...') right before it lands.\n"
@@ -366,7 +381,11 @@ def generate_script(topic_type="facts"):
             "crypto coin, or investment product; NEVER promise or imply a guaranteed return or a "
             "specific dollar/wealth outcome (e.g. 'you will become a millionaire', 'guaranteed "
             "profit'); keep everything general and educational, framed as 'here's how X works', "
-            "never 'here's what to buy'.\n\n"
+            "never 'here's what to buy'. STRICTLY avoid clickbait titles and hooks; make bold but "
+            "substantive and accurate claims. DO NOT generate repetitious content; each script must "
+            "have a unique angle even within the same category. DO NOT output SSML `<break>` tags in the script; "
+            "enforce natural speech pacing using ONLY proper punctuation (dashes, ellipses, commas) "
+            "so the text-to-speech engine reads it naturally.\n\n"
             "Return ONLY a valid JSON object with the following keys: "
             "'title' (string), 'description' (string), 'script' (string, the full narration as "
             "specified above), 'hashtags' (list of strings), "
@@ -375,10 +394,14 @@ def generate_script(topic_type="facts"):
             "'search_query' (1-2 broad, generic English words suitable for searching a stock "
             "photo/video library — NOT a full sentence. Use CONCRETE, PHOTOGRAPHABLE things, not "
             "abstract finance jargon: 'delivery', 'liquidity', or 'asset growth' return poor/irrelevant "
-            "stock matches — prefer physical objects/scenes like 'gold coins', 'credit card', 'laptop "
-            "screen', 'stock chart', 'piggy bank' instead), and 'ai_prompt' (a detailed, vivid "
+            "stock matches. Pick something SPECIFIC to what this particular scene is about — vary "
+            "your choice across scenes and don't default to the same object every time (e.g. don't "
+            "make every video's rule-1 scene a piggy bank; rotate through things like wallet, bank "
+            "vault, calculator, receipt, house keys, gas pump, grocery cart, coffee cup, whatever "
+            "actually fits this scene's specific point), and 'ai_prompt' (a detailed, vivid "
             "description of the same scene, to be used ONLY if no stock footage is found, suitable "
-            "for an AI image generator). The visuals for the HOOK and RULE 4 should be the two most "
+            "for an AI image generator). CRITICAL: Ensure 'search_query' and 'ai_prompt' strictly sync "
+            "with the exact context of each corresponding sentence in the script. The visuals for the HOOK and RULE 4 should be the two most "
             "visually striking scenes in the list. For RULE 2 or RULE 3 (pick one), make the "
             "ai_prompt an exaggerated, funny reaction-style visual to break the monotony — but it "
             "MUST be specific to THIS video's own topic and props (e.g. reacting to a specific bill, "
