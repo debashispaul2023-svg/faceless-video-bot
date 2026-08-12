@@ -53,6 +53,10 @@ APPLY_CHANGES = os.getenv("CHANNEL_MANAGER_APPLY_CHANGES", "false").lower() == "
 _LOG_FILE = config.ASSETS_DIR / "published_log.json"
 _ACTIONS_LOG_FILE = config.ASSETS_DIR / "channel_manager_actions.json"
 
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
+]
 
 # How far below the channel's own median a video has to fall to count as
 # "underperforming" (0.4 = less than 40% of the median views).
@@ -61,7 +65,79 @@ _MIN_AGE_HOURS_FOR_REVIEW = 48
 _MAX_AGE_DAYS_FOR_REVIEW = 21
 _MAX_EDITS_PER_RUN = 3  # a safety cap so one bad run can't rewrite the whole channel
 
-from thumbnail_generator import generate_thumbnail
+_THUMBNAIL_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    str(config.ASSETS_DIR / "fonts" / "CaptionFont-Bold.ttf"),
+]
+
+
+def _resolve_thumbnail_font() -> str:
+    for candidate in _THUMBNAIL_FONT_CANDIDATES:
+        if os.path.isfile(candidate):
+            return candidate
+    raise FileNotFoundError("No usable font found for thumbnail text (install fonts-dejavu-core).")
+
+
+def _wrap_text(draw, text, font, max_width):
+    words = text.upper().split()
+    lines, current = [], ""
+    for word in words:
+        trial = f"{current} {word}".strip()
+        if draw.textlength(trial, font=font) <= max_width:
+            current = trial
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _generate_thumbnail(title: str, save_path: Path) -> bool:
+    """
+    Generates a punchy, Shorts-style vertical thumbnail: an AI background
+    image (via Pollinations — no API key needed) with the new title burned
+    on top in bold text. Returns True/False; never raises.
+    """
+    try:
+        prompt = f"{title}, personal finance concept, dramatic cinematic lighting, photorealistic, no text, no watermark"
+        encoded = urllib.parse.quote(prompt)
+        url = (f"https://image.pollinations.ai/prompt/{encoded}"
+               f"?width=1080&height=1920&model=flux&seed={int(time.time())}")
+
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw_overlay = ImageDraw.Draw(overlay)
+        draw_overlay.rectangle([0, 0, img.width, img.height * 0.4], fill=(0, 0, 0, 130))
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.truetype(_resolve_thumbnail_font(), 100)
+        max_text_width = img.width - 100
+        lines = _wrap_text(draw, title, font, max_text_width)[:3]
+
+        line_height = 115
+        start_y = 80
+        for i, line in enumerate(lines):
+            line_width = draw.textlength(line, font=font)
+            x = (img.width - line_width) / 2
+            y = start_y + i * line_height
+            for dx, dy in [(-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (3, 3), (-3, 3), (3, -3)]:
+                draw.text((x + dx, y + dy), line, font=font, fill="black")
+            draw.text((x, y), line, font=font, fill="yellow")
+
+        img.save(save_path, quality=92)
+        return True
+    except Exception as e:
+        print(f"[!] Thumbnail generation failed: {e}")
+        traceback.print_exc()
+        return False
 
 
 def _authenticate():
@@ -164,7 +240,7 @@ def _rewrite_underperformer(youtube, gemini_client, video_id: str, old_title: st
         new_tags = new_meta.get("tags", old_tags) or old_tags
 
         thumbnail_path = config.OUTPUT_DIR / f"thumb_{video_id}.jpg"
-        thumbnail_ready = generate_thumbnail(new_title, thumbnail_path, seed_extra=video_id)
+        thumbnail_ready = _generate_thumbnail(new_title, thumbnail_path)
 
         _log_action({
             "type": "rewrite_metadata", "video_id": video_id,

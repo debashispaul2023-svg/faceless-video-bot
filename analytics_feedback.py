@@ -30,6 +30,10 @@ import config
 _LOG_FILE = config.ASSETS_DIR / "published_log.json"
 _SCORES_FILE = config.ASSETS_DIR / "category_scores.json"
 
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
+]
 
 
 def _authenticate():

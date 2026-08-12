@@ -1,6 +1,6 @@
 import time
 import traceback
-from ai_brain import generate_video_blueprint
+from researcher import generate_script
 from tts_engine import generate_voiceover
 from visual_generator import generate_visual_assets
 from video_renderer import render_final_video
@@ -9,78 +9,15 @@ from instagram_uploader import upload_to_instagram
 import analytics_feedback
 
 
-def _fallback_blueprint(index: int) -> dict:
-    """Local safe blueprint used only when Gemini cannot return a usable plan."""
-    script = (
-        "Before you buy anything, check your spending leaks. "
-        "Cancel one unused subscription, then move that money to savings automatically. "
-        "Small systems beat big motivation when your budget gets busy."
-    )
-    return {
-        "category": "budgeting and saving",
-        "metadata": {
-            "title": f"Money Leak Check #{index + 1}",
-            "description": "A quick USA personal finance reminder to reduce spending leaks and automate saving. #shorts",
-            "tags": ["personal finance", "budgeting and saving", "money tips", "shorts"],
-        },
-        "audio_direction": {
-            "bg_music_genre": "suspenseful_lofi",
-            "voice_pacing": "natural_fast",
-        },
-        "script": script,
-        "visual_scenes": [
-            {
-                "scene_id": 1,
-                "text_segment": "Before you buy anything, check your spending leaks.",
-                "broll_search_query": "person reviewing monthly subscriptions budget laptop",
-                "ai_fallback_prompt": "Photorealistic close-up of a person reviewing a household budget on a laptop, modern apartment, natural light",
-                "sfx_cue": "pop",
-            },
-            {
-                "scene_id": 2,
-                "text_segment": "Cancel one unused subscription, then move that money to savings automatically.",
-                "broll_search_query": "mobile banking automatic savings transfer",
-                "ai_fallback_prompt": "Photorealistic smartphone banking screen showing an automatic savings transfer, clean desk, subtle cash accents",
-                "sfx_cue": "cash_register",
-            },
-            {
-                "scene_id": 3,
-                "text_segment": "Small systems beat big motivation when your budget gets busy.",
-                "broll_search_query": "organized personal finance planner calendar",
-                "ai_fallback_prompt": "Photorealistic organized personal finance planner with calendar and simple budget notes, warm desk lighting",
-                "sfx_cue": "none",
-            },
-        ],
-    }
-
-
 def process_single_short(index: int, day_offset: int, target_hour: int, target_minute: int):
     print(f"\n==================== GENERATING SHORT #{index + 1} ====================")
 
-    # 1. Generate Blueprint via AI Brain
-    try:
-        blueprint = generate_video_blueprint()
-    except Exception as e:
-        print(f"[!] AI Brain failed completely for Short #{index + 1}: {e}")
-        traceback.print_exc()
-        blueprint = _fallback_blueprint(index)
+    script_data = generate_script()
 
-    # Restructure for legacy compatibility in uploaders
-    script_data = {
-        "title": blueprint.get("metadata", {}).get("title", "Automated Short"),
-        "description": blueprint.get("metadata", {}).get("description", ""),
-        "hashtags": blueprint.get("metadata", {}).get("tags", ["shorts"]),
-        "script": blueprint.get("script", ""),
-        "category": blueprint.get("category", "personal finance")
-    }
-
-    # 2. TTS Generation
     audio_path = generate_voiceover(script_data["script"], output_filename=f"voiceover_{index}.mp3")
 
-    # 3. Visual Assets Generation
-    images = generate_visual_assets(blueprint.get("visual_scenes", []))
+    images = generate_visual_assets(script_data.get("visual_scenes", []))
 
-    # 4. Final Video Rendering (Subtitles + SFX)
     final_video_path = render_final_video(
         image_paths=images,
         audio_path=audio_path,

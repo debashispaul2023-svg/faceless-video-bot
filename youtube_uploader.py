@@ -6,9 +6,8 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from thumbnail_generator import generate_thumbnail
-import config
 
+SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
 # The ONLY three times a video is ever allowed to publish. Nothing in this
 # file ever schedules outside these exact clock times (IST).
@@ -162,24 +161,5 @@ def schedule_video_upload(video_path: Path, metadata: dict, target_hour: int,
         if status:
             print(f"[+] Upload progress: {int(status.progress() * 100)}%")
 
-    video_id = response.get('id')
-    print(f"[✓] Upload successful! Video ID: {video_id} — scheduled for {publish_at_iso} IST")
-
-    # Give this video its own unique thumbnail instead of relying on
-    # YouTube's auto-picked frame — auto-picked frames kept converging on
-    # similar-looking stock footage across different videos, making many
-    # of them look identical in the Content list. Never let a thumbnail
-    # failure affect the upload itself, which has already succeeded above.
-    try:
-        thumb_path = config.OUTPUT_DIR / f"thumb_{video_id}.jpg"
-        if generate_thumbnail(metadata.get("title", "Money Mastery Shorts"), thumb_path, seed_extra=video_id):
-            youtube.thumbnails().set(
-                videoId=video_id,
-                media_body=MediaFileUpload(str(thumb_path))
-            ).execute()
-            print(f"[✓] Custom thumbnail set for {video_id}.")
-    except Exception as e:
-        print(f"[!] Could not set thumbnail for {video_id} (often means the channel isn't "
-              f"phone-verified yet — check youtube.com/verify): {e}")
-
-    return video_id
+    print(f"[✓] Upload successful! Video ID: {response.get('id')} — scheduled for {publish_at_iso} IST")
+    return response.get('id')

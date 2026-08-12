@@ -148,9 +148,8 @@ def generate_visual_assets(visual_scenes: list) -> list:
             search_query = scene[:40]
             ai_prompt = scene
         else:
-            # Check for new ai_brain.py schema keys first, then fallback to legacy keys
-            search_query = scene.get("broll_search_query") or scene.get("search_query") or scene.get("ai_fallback_prompt") or scene.get("ai_prompt", "")[:40]
-            ai_prompt = scene.get("ai_fallback_prompt") or scene.get("ai_prompt") or scene.get("broll_search_query") or scene.get("search_query", "")
+            search_query = scene.get("search_query") or scene.get("ai_prompt", "")[:40]
+            ai_prompt = scene.get("ai_prompt") or scene.get("search_query", "")
 
         if not search_query and not ai_prompt:
             print(f"[!] Scene {idx} has no usable query/prompt, skipping.")
@@ -164,11 +163,15 @@ def generate_visual_assets(visual_scenes: list) -> list:
             assets.append({"path": video_path, "type": "video"})
             continue
 
-        # --- FALLBACK GOAL: AI generation (if stock video fetch failed) ---
+        if search_query and _fetch_stock_image(search_query, image_path):
+            assets.append({"path": image_path, "type": "image"})
+            continue
+
+        # --- FALLBACK GOAL: AI generation (only if stock search failed) ---
         seed = int(time.time()) + idx
         if _generate_ai_image(ai_prompt or search_query, image_path, seed):
             assets.append({"path": image_path, "type": "image"})
         else:
-            print(f"[!] Both stock video and AI generation failed for scene {idx}, skipping this scene.")
+            print(f"[!] Both stock and AI generation failed for scene {idx}, skipping this scene.")
 
     return assets
