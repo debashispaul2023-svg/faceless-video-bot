@@ -39,13 +39,15 @@ def process_single_short(index: int, day_offset: int, target_hour: int, target_m
         )
         print(f"[✓] Upload process completed for Short #{index + 1}!")
 
-        # Best-effort: remember which category this video came from, so the
-        # analytics feedback loop can later correlate performance to topic.
+        # Best-effort: remember which category AND which hook technique this
+        # video used, so the analytics feedback loop can later correlate
+        # performance back to both (see analytics_feedback.update_category_weights()).
         try:
             analytics_feedback.log_published_video(
                 video_id=video_id,
                 category=script_data.get("category", "unknown"),
                 title=script_data.get("title", ""),
+                hook_technique=script_data.get("hook_technique", "unspecified"),
             )
         except Exception as e:
             print(f"[i] Could not log video for analytics feedback (non-fatal): {e}")
@@ -68,9 +70,9 @@ def main():
     print("=" * 60)
 
     # Best-effort: pull in performance data from previously published videos
-    # (if the analytics API is set up) so today's topic choices lean toward
-    # what's actually working. Safe no-op until that one-time setup is done —
-    # see the top of analytics_feedback.py.
+    # (if the analytics API is set up) so today's topic AND hook-style choices
+    # lean toward what's actually working. Safe no-op until that one-time
+    # setup is done — see the top of analytics_feedback.py.
     try:
         analytics_feedback.update_category_weights()
     except Exception as e:
