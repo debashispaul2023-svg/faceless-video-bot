@@ -15,6 +15,13 @@ REQUIRES A ONE-TIME SETUP STEP before this does anything useful:
 
 Until that's done, every function in this file just logs a message and does
 nothing harmful — it will NEVER crash or block video generation/upload.
+
+This file drives TWO feedback signals that researcher.py reads back into its
+prompt:
+  - assets/category_scores.json   -> which TOPIC CATEGORY performs best
+  - assets/success_patterns.json  -> which HOOK TECHNIQUE performs best
+Both are computed from the SAME per-video Analytics API pass in
+update_category_weights(), so this doesn't double the API quota used.
 """
 
 import os
@@ -29,6 +36,7 @@ import config
 
 _LOG_FILE = config.ASSETS_DIR / "published_log.json"
 _SCORES_FILE = config.ASSETS_DIR / "category_scores.json"
+_PATTERNS_FILE = config.ASSETS_DIR / "success_patterns.json"
 
 SCOPES = [
     "https://www.googleapis.com/auth/youtube",
@@ -50,11 +58,11 @@ def _authenticate():
     return creds
 
 
-def log_published_video(video_id: str, category: str, title: str):
+def log_published_video(video_id: str, category: str, title: str, hook_technique: str = None):
     """
     Call this right after a successful upload so we have a record of which
-    topic category each video came from — needed later to correlate
-    performance back to a category.
+    topic category AND which hook technique each video came from — needed
+    later to correlate performance back to both.
     """
     if not video_id:
         return
@@ -65,6 +73,7 @@ def log_published_video(video_id: str, category: str, title: str):
         entries.append({
             "video_id": video_id,
             "category": category or "unknown",
+            "hook_technique": hook_technique or "unspecified",
             "title": title,
             "published_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -78,8 +87,13 @@ def update_category_weights():
     """
     Best-effort: looks at videos published 20+ hours ago (so YouTube has had
     time to gather real numbers), pulls their views + average-view-percentage
-    from the YouTube Analytics API, and writes a per-category score file that
-    researcher.py reads to weight which category gets picked next run.
+    from the YouTube Analytics API, and writes:
+      - assets/category_scores.json   (per topic category — read by
+        researcher.py's _choose_category())
+      - assets/success_patterns.json  (per hook technique — read by
+        researcher.py's generate_script() as success_pattern_clause)
+    from the SAME per-video API calls, so this is a single feedback pass
+    covering both "what topic to pick" and "how to hook viewers on it."
 
     Any failure here (scope not granted yet, API not enabled, no data yet,
     quota issue, etc.) is caught and simply skipped.
@@ -108,7 +122,9 @@ def update_category_weights():
         creds = _authenticate()
         analytics = build("youtubeAnalytics", "v2", credentials=creds)
 
-        scores, counts = {}, {}
+        category_scores, category_counts = {}, {}
+        technique_scores, technique_counts = {}, {}
+
         for entry in candidates:
             try:
                 resp = analytics.reports().query(
@@ -122,21 +138,43 @@ def update_category_weights():
                 if not rows:
                     continue
                 views, avg_pct = rows[0][0], rows[0][1]
-                category = entry.get("category", "unknown")
+
                 # Retention matters more than raw views for a young channel.
                 score = (avg_pct or 0) * 2 + min(views or 0, 1000) / 100
-                scores[category] = scores.get(category, 0) + score
-                counts[category] = counts.get(category, 0) + 1
+
+                category = entry.get("category", "unknown")
+                category_scores[category] = category_scores.get(category, 0) + score
+                category_counts[category] = category_counts.get(category, 0) + 1
+
+                technique = entry.get("hook_technique", "unspecified")
+                if technique and technique != "unspecified":
+                    technique_scores[technique] = technique_scores.get(technique, 0) + score
+                    technique_counts[technique] = technique_counts.get(technique, 0) + 1
             except Exception:
                 continue  # one bad lookup shouldn't sink the whole update
 
-        if not scores:
-            print("[i] Analytics feedback: API reachable but no usable rows returned yet.")
-            return
+        if category_scores:
+            averaged_categories = {cat: round(category_scores[cat] / category_counts[cat], 2) for cat in category_scores}
+            _SCORES_FILE.write_text(json.dumps(averaged_categories, indent=2))
+            print(f"[+] Updated category performance scores: {averaged_categories}")
+        else:
+            print("[i] Analytics feedback: API reachable but no usable rows returned yet for categories.")
 
-        averaged = {cat: round(scores[cat] / counts[cat], 2) for cat in scores}
-        _SCORES_FILE.write_text(json.dumps(averaged, indent=2))
-        print(f"[+] Updated category performance scores: {averaged}")
+        if technique_scores:
+            averaged_techniques = {tech: round(technique_scores[tech] / technique_counts[tech], 2) for tech in technique_scores}
+            best_technique = max(averaged_techniques, key=averaged_techniques.get)
+            sample_size = sum(technique_counts.values())
+            patterns = {
+                "technique_scores": averaged_techniques,
+                "best_technique": best_technique,
+                "sample_size": sample_size,
+                "updated_at": now.isoformat(),
+            }
+            _PATTERNS_FILE.write_text(json.dumps(patterns, indent=2))
+            print(f"[+] Updated hook-technique success patterns: {averaged_techniques} "
+                  f"(best so far: '{best_technique}', from {sample_size} videos)")
+        else:
+            print("[i] Analytics feedback: no hook_technique data yet (older videos predate this feature).")
 
     except KeyError as e:
         print(f"[i] Analytics feedback skipped — missing env var {e}. "
