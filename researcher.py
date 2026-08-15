@@ -24,11 +24,15 @@ _TOPIC_CATEGORIES = [
 # so a bad API key doesn't make every single video identical.
 # Each scene now carries BOTH a `search_query` (1-2 broad words, for the
 # free stock API) and an `ai_prompt` (detailed description, used only if
-# the stock search comes up empty).
+# the stock search comes up empty). `hook_technique` tags which of the
+# three hook styles (see the live prompt below) this fallback actually
+# uses, so it feeds the same success-pattern tracking as live-generated
+# scripts instead of always logging as "unspecified".
 _FALLBACK_SCRIPTS = [
     {
         "title": "4 Money Rules That Keep You Broke If You Ignore Them",
         "category": "budgeting and saving money",
+        "hook_technique": "counter_intuitive_fact",
         "description": "Follow these 4 rules before you spend another dollar. #shorts #finance #budgeting",
         "script": "Most people who save money are STILL broke, and it's because they follow zero real rules. Rule one, pay yourself first, before any bill touches it. Rule two, track every dollar for one week, it will SHOCK you. Rule three, automate your savings so willpower never matters... Rule four, the real secret, is a 24 hour rule before any purchase over fifty. That habit CHANGES EVERYTHING. Comment which rule you break, or just hit follow.",
         "hashtags": ["shorts", "finance", "budgeting", "moneytips"],
@@ -44,6 +48,7 @@ _FALLBACK_SCRIPTS = [
     {
         "title": "4 Investing Rules Nobody Tells Beginners",
         "category": "investing and wealth building",
+        "hook_technique": "counter_intuitive_fact",
         "description": "The 4 rules that separate wealthy investors from everyone else. #shorts #investing",
         "script": "Waiting to invest is the most expensive mistake you will EVER make, and nobody warns you. Rule one, start with any amount, consistency beats the perfect number. Rule two, index funds quietly outperform most expert stock pickers. Rule three, never touch your investments during a dip... Rule four, and this CHANGES EVERYTHING, time in the market always beats timing the market. Comment if you're actually investing yet, or just drop rule four and follow.",
         "hashtags": ["shorts", "finance", "investing", "wealth"],
@@ -59,6 +64,7 @@ _FALLBACK_SCRIPTS = [
     {
         "title": "4 Credit Score Rules Banks Hope You Never Learn",
         "category": "debt management and credit scores",
+        "hook_technique": "counter_intuitive_fact",
         "description": "Fix your credit score before it's too late. #shorts #credit",
         "script": "Your credit score is quietly controlling your life, and most people have NO idea how badly they're wrecking it. Rule one, keep utilization under thirty percent, always. Rule two, never close your oldest card, age matters more than you think. Rule three, pay twice a month, it fools the algorithm... Rule four, the one nobody follows, is checking your report for errors yearly. That alone costs people THOUSANDS. Comment your score, or just hit follow.",
         "hashtags": ["shorts", "finance", "credit", "moneytips"],
@@ -74,6 +80,7 @@ _FALLBACK_SCRIPTS = [
     {
         "title": "4 Side Hustle Rules That Actually Make Money",
         "category": "side hustles and making money online",
+        "hook_technique": "everyday_comparison",
         "description": "Skip the fluff — these 4 rules actually work. #shorts #sidehustle",
         "script": "Some people make more in ten hours a week than others make full time, and they NEVER show up to an office. Rule one, pick a skill people already pay for. Rule two, charge more than feels comfortable, underpricing kills hustles fast. Rule three, reinvest your first profits into getting better... Rule four, the brutal one, is that consistency beats talent every time. Comment your side hustle, or drop rule four and follow.",
         "hashtags": ["shorts", "finance", "sidehustle", "entrepreneur"],
@@ -89,6 +96,7 @@ _FALLBACK_SCRIPTS = [
     {
         "title": "4 Retirement Rules Nobody Follows (But Should)",
         "category": "financial independence and retirement planning",
+        "hook_technique": "counter_intuitive_fact",
         "description": "Retiring comfortably comes down to these 4 rules. #shorts #retirement",
         "script": "Retiring at sixty five is a myth sold to people who never learned these four rules. Rule one, save AT LEAST twenty percent of every paycheck. Rule two, your expenses matter more than income, always. Rule three, let compound interest work for decades, not years... Rule four, the one that CHANGES EVERYTHING, is calculating your real retirement number today. Most people never do it. Comment your number, or drop rule four if math scares you.",
         "hashtags": ["shorts", "finance", "retirement", "wealthbuilding"],
@@ -331,6 +339,30 @@ def generate_script(topic_type="facts"):
         except Exception:
             pass
 
+        # NEW: success-pattern feedback — analytics_feedback.py measures which
+        # hook_technique this channel's own past videos performed best with
+        # (see assets/success_patterns.json) and we nudge the model toward it,
+        # without locking in so hard that we stop exploring the others.
+        success_pattern_clause = ""
+        try:
+            patterns_path = Path(__file__).resolve().parent / "assets" / "success_patterns.json"
+            if patterns_path.is_file():
+                patterns = json.loads(patterns_path.read_text())
+                best_technique = patterns.get("best_technique")
+                sample_size = patterns.get("sample_size", 0)
+                if best_technique and sample_size >= 3:
+                    success_pattern_clause = (
+                        f"\n\nSUCCESS PATTERN NOTE: data from this channel's own past "
+                        f"{sample_size} videos shows the '{best_technique}' hook style has "
+                        f"performed best so far (highest retention + views combined). Lean "
+                        f"toward that style for THIS script unless a different technique from "
+                        f"the menu below clearly fits this specific topic better — don't force "
+                        f"a bad fit just to repeat what worked before, and still use the other "
+                        f"techniques sometimes so this data keeps improving instead of going stale."
+                    )
+        except Exception:
+            pass
+
         trending_titles = _fetch_trending_finance_titles()
         trending_clause = ""
         if trending_titles:
@@ -345,20 +377,24 @@ def generate_script(topic_type="facts"):
             "You are an elite financial advisor and viral YouTube Shorts scriptwriter. Write a "
             "high-retention, psychology-backed finance script strictly tailored for a 25-30 second "
             f"Short, in the category of "
-            f"{category}.{avoid_clause}{retention_clause}{trending_clause}\n\n"
+            f"{category}.{avoid_clause}{retention_clause}{success_pattern_clause}{trending_clause}\n\n"
             "STRICT SCRIPT STRUCTURE:\n"
             "1. THE HOOK (first 3 seconds): a high-stakes, bold psychological hook that forces "
             "viewers to freeze — lead with the single most shocking claim, number, or consequence "
             "in the whole script. Pick WHICHEVER of these techniques fits the topic best (vary it "
             "across scripts, don't always use the same one):\n"
-            "   a) Counter-intuitive fact: challenge something the viewer assumes is true. Style "
+            "   a) counter_intuitive_fact: challenge something the viewer assumes is true. Style "
             "example: 'Smart people NEVER stay broke because they follow these 4 money rules.'\n"
-            "   b) Promise of reward: tell them exactly what they'll walk away knowing. Style "
+            "   b) promise_of_reward: tell them exactly what they'll walk away knowing. Style "
             "example: 'By the end of this, you'll know the exact trick the wealthy use to dodge "
             "this penalty — and it takes 30 seconds to set up.'\n"
-            "   c) Everyday-economics comparison: tie an abstract money concept to something small "
+            "   c) everyday_comparison: tie an abstract money concept to something small "
             "and relatable. Style example: 'Your morning coffee habit is quietly costing you fifty "
             "thousand dollars.'\n"
+            "After you write the hook, report which technique you actually used as a new top-level "
+            "JSON field 'hook_technique' — its value MUST be exactly one of: 'counter_intuitive_fact', "
+            "'promise_of_reward', 'everyday_comparison' (matching the a/b/c labels above, not the "
+            "letter itself).\n"
             "Do NOT ease into it, and never open with 'Did you know...', 'Let's talk about...', or "
             "'Have you ever wondered...'.\n"
             "2. FOUR DISTINCT FINANCIAL RULES: ultra-concise, practical money tips (rules 1-3), "
@@ -381,13 +417,10 @@ def generate_script(topic_type="facts"):
             "crypto coin, or investment product; NEVER promise or imply a guaranteed return or a "
             "specific dollar/wealth outcome (e.g. 'you will become a millionaire', 'guaranteed "
             "profit'); keep everything general and educational, framed as 'here's how X works', "
-            "never 'here's what to buy'. STRICTLY avoid clickbait titles and hooks; make bold but "
-            "substantive and accurate claims. DO NOT generate repetitious content; each script must "
-            "have a unique angle even within the same category. DO NOT output SSML `<break>` tags in the script; "
-            "enforce natural speech pacing using ONLY proper punctuation (dashes, ellipses, commas) "
-            "so the text-to-speech engine reads it naturally.\n\n"
+            "never 'here's what to buy'.\n\n"
             "Return ONLY a valid JSON object with the following keys: "
-            "'title' (string), 'description' (string), 'script' (string, the full narration as "
+            "'title' (string), 'description' (string), 'hook_technique' (string, exactly one of "
+            "the three values described above), 'script' (string, the full narration as "
             "specified above), 'hashtags' (list of strings), "
             "'visual_scenes' (a list of exactly 6 objects, one per beat, in this order: hook, "
             "rule 1, rule 2, rule 3, rule 4, cta). Each object MUST have exactly two keys: "
@@ -400,8 +433,7 @@ def generate_script(topic_type="facts"):
             "vault, calculator, receipt, house keys, gas pump, grocery cart, coffee cup, whatever "
             "actually fits this scene's specific point), and 'ai_prompt' (a detailed, vivid "
             "description of the same scene, to be used ONLY if no stock footage is found, suitable "
-            "for an AI image generator). CRITICAL: Ensure 'search_query' and 'ai_prompt' strictly sync "
-            "with the exact context of each corresponding sentence in the script. The visuals for the HOOK and RULE 4 should be the two most "
+            "for an AI image generator). The visuals for the HOOK and RULE 4 should be the two most "
             "visually striking scenes in the list. For RULE 2 or RULE 3 (pick one), make the "
             "ai_prompt an exaggerated, funny reaction-style visual to break the monotony — but it "
             "MUST be specific to THIS video's own topic and props (e.g. reacting to a specific bill, "
@@ -423,6 +455,7 @@ def generate_script(topic_type="facts"):
 
         result = json.loads(raw_text)
         result["category"] = category
+        result.setdefault("hook_technique", "unspecified")  # in case Gemini forgets it — never let this block the pipeline
         if result.get("script"):
             result["script"] = _enforce_max_duration(result["script"])
         _remember_title(result.get("title", ""))
