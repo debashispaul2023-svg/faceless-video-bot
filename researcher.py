@@ -339,27 +339,55 @@ def generate_script(topic_type="facts"):
         except Exception:
             pass
 
-        # NEW: success-pattern feedback — analytics_feedback.py measures which
-        # hook_technique this channel's own past videos performed best with
-        # (see assets/success_patterns.json) and we nudge the model toward it,
-        # without locking in so hard that we stop exploring the others.
-        success_pattern_clause = ""
+        # REINFORCEMENT LEARNING (80/20 exploit/explore) — reads the
+        # structural DNA of this channel's actual top-performing videos
+        # (assets/top_performing_patterns.json, written by
+        # analytics_feedback.get_top_performing_patterns()) and either:
+        #   80% of the time: asks Gemini to replicate the STRUCTURE/psychology
+        #     of what's already working (never the literal wording — that
+        #     would be duplicate content and risk YouTube's repetitious-
+        #     content policy), applied to a brand-new topic/angle.
+        #   20% of the time: deliberately explores something untested, so
+        #     the channel keeps discovering new formats instead of ossifying
+        #     around one early pattern.
+        # Smoothly falls back to no clause at all (default prompt behavior)
+        # if there isn't enough data yet — this is a pure prompt-context
+        # addition, so it can never change the JSON schema being returned.
+        reinforcement_clause = ""
         try:
-            patterns_path = Path(__file__).resolve().parent / "assets" / "success_patterns.json"
+            patterns_path = Path(__file__).resolve().parent / "assets" / "top_performing_patterns.json"
             if patterns_path.is_file():
-                patterns = json.loads(patterns_path.read_text())
-                best_technique = patterns.get("best_technique")
-                sample_size = patterns.get("sample_size", 0)
-                if best_technique and sample_size >= 3:
-                    success_pattern_clause = (
-                        f"\n\nSUCCESS PATTERN NOTE: data from this channel's own past "
-                        f"{sample_size} videos shows the '{best_technique}' hook style has "
-                        f"performed best so far (highest retention + views combined). Lean "
-                        f"toward that style for THIS script unless a different technique from "
-                        f"the menu below clearly fits this specific topic better — don't force "
-                        f"a bad fit just to repeat what worked before, and still use the other "
-                        f"techniques sometimes so this data keeps improving instead of going stale."
-                    )
+                data = json.loads(patterns_path.read_text())
+                top_patterns = data.get("patterns", [])
+                if top_patterns:
+                    if random.random() < 0.8:
+                        # 80% EXPLOIT
+                        dna_lines = "\n".join(
+                            f"  - \"{p.get('title', '')}\" — {p.get('structure_note', '')} "
+                            f"(performance score: {p.get('score', '?')})"
+                            for p in top_patterns
+                        )
+                        reinforcement_clause = (
+                            "\n\nREINFORCEMENT LEARNING NOTE (80% exploit): these are this "
+                            f"channel's actual top-performing videos so far:\n{dna_lines}\n"
+                            "Deconstruct WHY they likely worked — the specific hook formula, the "
+                            "emotional trigger it leans on, the pacing — and apply that SAME "
+                            "structural formula to a brand-new topic/angle for THIS script. Do "
+                            "NOT reuse their exact wording, title, specific examples, or numbers "
+                            "— that would be duplicate content and risk YouTube's repetitious-"
+                            "content policy. Replicate the STRUCTURE and PSYCHOLOGY only, never "
+                            "the content itself, and this script must still be about the topic "
+                            "category given above, not the topic of the videos listed here."
+                        )
+                    else:
+                        # 20% EXPLORE
+                        reinforcement_clause = (
+                            "\n\nREINFORCEMENT LEARNING NOTE (20% explore): this run is a "
+                            "deliberate experiment — lean toward a hook technique or angle this "
+                            "channel hasn't been relying on recently, rather than just repeating "
+                            "the proven pattern. The goal is discovering new high-performing "
+                            "formats, not optimizing the same one further this time."
+                        )
         except Exception:
             pass
 
@@ -377,7 +405,7 @@ def generate_script(topic_type="facts"):
             "You are an elite financial advisor and viral YouTube Shorts scriptwriter. Write a "
             "high-retention, psychology-backed finance script strictly tailored for a 25-30 second "
             f"Short, in the category of "
-            f"{category}.{avoid_clause}{retention_clause}{success_pattern_clause}{trending_clause}\n\n"
+            f"{category}.{avoid_clause}{retention_clause}{reinforcement_clause}{trending_clause}\n\n"
             "STRICT SCRIPT STRUCTURE:\n"
             "1. THE HOOK (first 3 seconds): a high-stakes, bold psychological hook that forces "
             "viewers to freeze — lead with the single most shocking claim, number, or consequence "
