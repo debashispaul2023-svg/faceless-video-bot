@@ -14,6 +14,11 @@ PEXELS_API_KEY = config.PEXELS_API_KEY
 PEXELS_VIDEO_SEARCH_URL = "https://api.pexels.com/videos/search"
 PEXELS_PHOTO_SEARCH_URL = "https://api.pexels.com/v1/search"
 
+# Shorts compliance: reject sources below this width so the render-time
+# cover-crop to 1080px never has to upscale a low-res source (which would
+# introduce visible softness/artifacts once it fills the 9:16 frame).
+_MIN_SOURCE_WIDTH = 720
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def _download_file(url: str, save_path: Path):
@@ -50,13 +55,16 @@ def _fetch_stock_video(search_query: str, save_path: Path) -> bool:
         # prompt, but this is the safety net for when it doesn't.
         video_entry = random.choice(videos[:3]) if len(videos) >= 3 else videos[0]
 
-        # Prefer a moderate-resolution vertical (portrait) mp4 file so we don't
-        # download something huge or something in the wrong aspect ratio.
+        # Prefer a moderate-resolution vertical (portrait) mp4 file, at or
+        # above _MIN_SOURCE_WIDTH, so we don't download something huge, the
+        # wrong aspect ratio, or something so low-res it looks soft once
+        # cover-cropped up to the 1080px Shorts frame.
         video_files = video_entry.get("video_files", [])
-        candidates = [
+        portrait_files = [
             f for f in video_files
             if f.get("file_type") == "video/mp4" and f.get("width", 0) < f.get("height", 1)
-        ] or video_files
+        ]
+        candidates = [f for f in portrait_files if f.get("width", 0) >= _MIN_SOURCE_WIDTH] or portrait_files or video_files
 
         if not candidates:
             return False
@@ -124,22 +132,34 @@ def _generate_ai_image(ai_prompt: str, save_path: Path, seed: int) -> bool:
 
 def generate_visual_assets(visual_scenes: list) -> list:
     """
-    Stock-First, AI-Fallback visual pipeline.
-
-    For every scene:
-      1. Try a real, free stock VIDEO clip (Pexels Videos API).
+    Stock-First, AI-Fallback visual pipeline, tuned for YouTube Shorts (9:16,
+    1080x1920) compliance:
+      1. Try a real, free stock VIDEO clip (Pexels Videos API), portrait
+         orientation, at or above _MIN_SOURCE_WIDTH so the render-time
+         cover-crop never has to upscale a soft/low-res source.
       2. If that returns nothing, try a real, free stock PHOTO (Pexels Photos API).
       3. ONLY if both of the above fail/return zero results, fall back to
-         generating the visual with AI (Pollinations Flux).
+         generating the visual with AI (Pollinations Flux) at 1080x1920.
+
+    Final framing to exactly 1080x1920 without stretching (cover-resize +
+    center-crop) happens in video_renderer.py, which is the single source of
+    truth for frame compliance — this file only guarantees each SOURCE asset
+    is portrait-oriented and reasonably high-resolution going in.
 
     `visual_scenes` is a list of dicts, each with:
         - "search_query": short broad term(s) for the stock search
         - "ai_prompt":    detailed description for the AI fallback
+        - "sfx_cue":      optional — a short keyword (e.g. "whoosh") that
+                          video_renderer.py can match against files in
+                          assets/sfx/ to mix in a sound effect at this
+                          scene's start, at 0.7 volume. Safe to omit; simply
+                          passed through unchanged if present so this stays
+                          forward-compatible with scripts that don't set it.
 
     For backward compatibility, plain strings are also accepted (treated as
-    both the search query and the AI prompt).
+    both the search query and the AI prompt, with no sfx_cue).
 
-    Returns a list of dicts: {"path": Path, "type": "video" | "image"}
+    Returns a list of dicts: {"path": Path, "type": "video" | "image", "sfx_cue": str | None}
     """
     assets = []
 
@@ -147,9 +167,11 @@ def generate_visual_assets(visual_scenes: list) -> list:
         if isinstance(scene, str):
             search_query = scene[:40]
             ai_prompt = scene
+            sfx_cue = None
         else:
             search_query = scene.get("search_query") or scene.get("ai_prompt", "")[:40]
             ai_prompt = scene.get("ai_prompt") or scene.get("search_query", "")
+            sfx_cue = scene.get("sfx_cue")
 
         if not search_query and not ai_prompt:
             print(f"[!] Scene {idx} has no usable query/prompt, skipping.")
@@ -160,17 +182,17 @@ def generate_visual_assets(visual_scenes: list) -> list:
 
         # --- PRIMARY GOAL: real internet footage --------------------------
         if search_query and _fetch_stock_video(search_query, video_path):
-            assets.append({"path": video_path, "type": "video"})
+            assets.append({"path": video_path, "type": "video", "sfx_cue": sfx_cue})
             continue
 
         if search_query and _fetch_stock_image(search_query, image_path):
-            assets.append({"path": image_path, "type": "image"})
+            assets.append({"path": image_path, "type": "image", "sfx_cue": sfx_cue})
             continue
 
         # --- FALLBACK GOAL: AI generation (only if stock search failed) ---
         seed = int(time.time()) + idx
         if _generate_ai_image(ai_prompt or search_query, image_path, seed):
-            assets.append({"path": image_path, "type": "image"})
+            assets.append({"path": image_path, "type": "image", "sfx_cue": sfx_cue})
         else:
             print(f"[!] Both stock and AI generation failed for scene {idx}, skipping this scene.")
 

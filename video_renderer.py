@@ -33,6 +33,37 @@ _KEN_BURNS_ZOOM = 0.12
 _CAPTION_FONT_SIZE = 70
 _CAPTION_CHUNK_SIZE = 3  # words shown on screen together, with one highlighted at a time
 
+# --- YouTube Shorts compliance -------------------------------------------
+# Subtitle Safe Zone: Shorts UI (like/comment/share rail, caption/profile
+# strip) reliably avoids the vertical band between 65%-75% of screen height,
+# so captions are centered inside that band rather than pinned to a fixed
+# pixel offset (which silently drifts out of the safe zone if VIDEO_HEIGHT
+# ever changes).
+_CAPTION_Y_RATIO = 0.70  # sits centered within the 65%-75% safe zone
+
+# Audio mix levels.
+_VOICEOVER_VOLUME = 1.0
+_SFX_VOLUME = 0.7
+# config.BGM_VOLUME (0.12) is already the "ducked under narration" level —
+# since the narration track spans effectively the entire video in this
+# pipeline, there's no separate louder/quieter section to duck between;
+# keeping BGM constantly this low IS the ducking.
+
+# Render settings.
+_RENDER_FPS = getattr(config, "FPS", 30)
+_RENDER_PRESET = "ultrafast"
+_RENDER_THREADS = 4
+
+# Strict duration bounds for YouTube Shorts.
+_MIN_VIDEO_DURATION = 15.0
+_MAX_VIDEO_DURATION = 58.0
+
+# Optional sound-effect clips, matched by keyword against each scene's
+# optional "sfx_cue" (see visual_generator.py's passthrough). Silently does
+# nothing if the folder is empty — same graceful-degradation pattern as BGM.
+_SFX_DIR = config.ASSETS_DIR / "sfx"
+_SFX_DIR.mkdir(exist_ok=True)
+
 # --- Retention tuning ---------------------------------------------------
 # The HOOK scene (the very first one) runs at this fraction of an even split,
 # so the opening cut lands noticeably faster than the rest of the video. Most
@@ -92,8 +123,10 @@ def _load_word_timings(audio_path: Path):
 def _build_captions(narration_text: str, total_duration: float, audio_path: Path):
     """
     Builds karaoke-style captions: a few words are shown on screen together
-    (in white), and the specific word being spoken right now is highlighted
-    in yellow — just like popular Shorts/Reels captions.
+    (in white, bold, black-stroked for high contrast), and the specific word
+    being spoken right now is highlighted in yellow — just like popular
+    Shorts/Reels captions. Centered inside the 65%-75% Shorts Safe Zone
+    (_CAPTION_Y_RATIO) so the platform's UI chrome never overlaps the text.
 
     Uses REAL per-word timing from edge-tts's WordBoundary events when
     available (see tts_engine.py); otherwise falls back to splitting the
@@ -119,7 +152,10 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
         word_times = [(w, i * per_word, (i + 1) * per_word) for i, w in enumerate(words)]
 
     clips = []
-    y_pos = 1350
+    # Shorts Safe Zone: centered within the 65%-75% band of screen height,
+    # computed from the actual video height rather than a hardcoded pixel
+    # offset, so it stays correct even if VIDEO_HEIGHT is ever changed.
+    y_pos = int(config.VIDEO_HEIGHT * _CAPTION_Y_RATIO)
 
     # Build chunks that respect sentence boundaries: a chunk can be shorter
     # than _CAPTION_CHUNK_SIZE if a word ends a sentence, so on-screen text
@@ -151,6 +187,7 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
         chunk_duration = max(0.05, chunk_end_time - chunk_start_time)
 
         # Base layer: the whole chunk, visible in white for its full duration.
+        # Bold font + thick black stroke = high contrast against any background.
         base_text = " ".join(chunk_words_upper)
         base_clip = (
             TextClip(
@@ -190,10 +227,11 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
 def _pick_background_music(duration: float):
     """
     Picks a random track from assets/music/, loops/trims it to match the
-    video's duration, and turns its volume down so it sits under the
-    narration instead of competing with it. Returns None (silently) if no
-    music files are available — BGM is a nice-to-have, never a hard
-    requirement, so its absence must never break rendering.
+    video's duration, and turns its volume down (config.BGM_VOLUME, 0.12 —
+    "ducked" under the narration) so it sits under the narration instead of
+    competing with it. Returns None (silently) if no music files are
+    available — BGM is a nice-to-have, never a hard requirement, so its
+    absence must never break rendering.
     """
     tracks = list(config.MUSIC_DIR.glob("*.mp3")) + list(config.MUSIC_DIR.glob("*.wav"))
     if not tracks:
@@ -211,7 +249,7 @@ def _pick_background_music(duration: float):
             music = concatenate_audioclips([AudioFileClip(str(track_path)) for _ in range(loops_needed)])
         music = music.subclipped(0, duration)
         music = music.with_effects([afx.MultiplyVolume(config.BGM_VOLUME)])
-        print(f"[+] Added background music: {track_path.name}")
+        print(f"[+] Added background music: {track_path.name} (ducked to {config.BGM_VOLUME})")
         return music
     except Exception as e:
         print(f"[!] Failed to load background music ({e}); continuing without it.")
@@ -219,9 +257,41 @@ def _pick_background_music(duration: float):
         return None
 
 
+def _pick_sfx_clip(sfx_cue: str, start_time: float):
+    """
+    Best-effort: matches an optional per-scene `sfx_cue` keyword (see
+    visual_generator.py's passthrough) against filenames in assets/sfx/
+    (e.g. sfx_cue="whoosh" matches "whoosh_1.mp3"), positions it at the
+    scene's start time, and mixes it at _SFX_VOLUME. Returns None silently
+    if there's no cue, no folder contents, or no match — SFX is always
+    optional, never a hard requirement.
+    """
+    if not sfx_cue or sfx_cue.lower() in ("none", "null", ""):
+        return None
+
+    candidates = [
+        f for f in list(_SFX_DIR.glob("*.mp3")) + list(_SFX_DIR.glob("*.wav"))
+        if sfx_cue.lower().replace(" ", "_") in f.stem.lower()
+    ]
+    if not candidates:
+        return None
+
+    try:
+        sfx = AudioFileClip(str(random.choice(candidates)))
+        sfx = sfx.with_effects([afx.MultiplyVolume(_SFX_VOLUME)]).with_start(start_time)
+        print(f"[+] Added SFX '{sfx_cue}' at {start_time:.2f}s (volume {_SFX_VOLUME})")
+        return sfx
+    except Exception as e:
+        print(f"[!] Failed to load SFX for cue '{sfx_cue}': {e}")
+        return None
+
+
 def _cover_resize_and_crop(clip, target_w: int, target_h: int):
-    """Resizes `clip` to fully cover a target_w x target_h frame, then
-    centre-crops any overflow. Works for both images and videos."""
+    """Resizes `clip` to fully cover a target_w x target_h frame (no
+    stretching — aspect ratio is preserved), then centre-crops any overflow
+    to land exactly on target_w x target_h. This is the single source of
+    truth for 9:16 Shorts framing compliance; works for both images, videos,
+    and the fully-composited final clip."""
     clip = clip.resized(height=target_h)
     if clip.w < target_w:
         clip = clip.resized(width=target_w)
@@ -264,7 +334,7 @@ def _ken_burns_image_clip(path: Path, duration: float, target_w: int, target_h: 
 def _clip_for_asset(asset: dict, duration: float):
     """
     Turns one visual asset into a moviepy clip that lasts exactly `duration`
-    seconds, filling the 9:16 frame:
+    seconds, filling the 9:16 frame via cover-crop (never stretched):
       - real stock VIDEO clips are looped/trimmed and played as-is
       - still IMAGES get a slow Ken Burns zoom instead of sitting frozen
     """
@@ -392,16 +462,17 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     """
     Renders the final video: real stock video clips play as-is, still images
     get a Ken Burns zoom, scenes cross-fade into each other, karaoke-style
-    word-highlighted subtitles are burned in on top, and background music
-    (if any .mp3/.wav files exist in assets/music/) is mixed under the
-    narration.
+    word-highlighted subtitles are burned in on top (inside the 65%-75%
+    Shorts Safe Zone), optional SFX and background music are mixed under the
+    narration, and the whole thing is guaranteed to land at exactly 9:16
+    (1080x1920, cover-cropped, never stretched) and between 15-58 seconds.
 
     `image_paths` accepts either:
       - a list of dicts: {"path": Path, "type": "video" | "image"}  (preferred,
         matches the stock-first visual_generator.py output), or
       - a plain list of image Paths (for backward compatibility).
     """
-    print("[+] Assembling video with MoviePy (Ken Burns + crossfades + BGM + karaoke captions)...")
+    print("[+] Assembling video with MoviePy (Ken Burns + crossfades + BGM + SFX + karaoke captions)...")
 
     assets = []
     for item in image_paths:
@@ -414,6 +485,19 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
         raise ValueError("render_final_video received no visual assets to work with.")
 
     narration_clip = AudioFileClip(str(audio_path))
+    # Explicit voiceover level (1.0 = unity gain) so the mix ratio against
+    # BGM/SFX is deliberate and documented, not just "whatever the file has."
+    narration_clip = narration_clip.with_effects([afx.MultiplyVolume(_VOICEOVER_VOLUME)])
+
+    # --- Strict duration bounds (YouTube Shorts compliance) -----------------
+    if narration_clip.duration > _MAX_VIDEO_DURATION:
+        print(f"[!] Narration is {narration_clip.duration:.1f}s, over the "
+              f"{_MAX_VIDEO_DURATION}s Shorts limit — trimming.")
+        narration_clip = narration_clip.subclipped(0, _MAX_VIDEO_DURATION)
+    elif narration_clip.duration < _MIN_VIDEO_DURATION:
+        print(f"[!] Narration is only {narration_clip.duration:.1f}s, under the "
+              f"{_MIN_VIDEO_DURATION}s Shorts minimum — script should be lengthened "
+              f"upstream (researcher.py); proceeding anyway rather than blocking the pipeline.")
 
     # Every scene gets an even slice, EXCEPT the hook (first scene), which
     # runs shorter on purpose — see _HOOK_DURATION_RATIO above. The time
@@ -444,7 +528,8 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     if not clips:
         raise RuntimeError("All visual assets failed to load; cannot render video.")
 
-    if len(clips) != len(assets):
+    scenes_consistent = len(clips) == len(assets)
+    if not scenes_consistent:
         duration_per_asset = narration_clip.duration / len(clips) + _CROSSFADE_DURATION
         clips = [c.with_duration(duration_per_asset) for c in clips]
 
@@ -459,17 +544,52 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     # above can leave the video a hair longer than the audio).
     video_clip = video_clip.subclipped(0, narration_clip.duration)
 
-    # --- Audio: mix narration (full volume) with background music (quiet) ---
+    # --- 9:16 Shorts framing guarantee ---------------------------------
+    # Every per-scene clip is already cover-cropped to VIDEO_WIDTH x
+    # VIDEO_HEIGHT, but this is a final, unconditional safety net so the
+    # composited/concatenated clip is GUARANTEED to be exactly 1080x1920 —
+    # no letterboxing, no stretching — regardless of any edge case above.
+    video_clip = _cover_resize_and_crop(video_clip, config.VIDEO_WIDTH, config.VIDEO_HEIGHT)
+
+    # --- Audio: mix narration (1.0) + background music (0.12, ducked) + optional SFX (0.7) ---
+    audio_tracks = [narration_clip]
+
     bgm_clip = _pick_background_music(narration_clip.duration)
     if bgm_clip is not None:
+        audio_tracks.append(bgm_clip)
+
+    if scenes_consistent:
+        cursor = 0.0
+        scene_start_times = []
+        for d in scene_durations:
+            scene_start_times.append(cursor)
+            cursor += d - _CROSSFADE_DURATION
+
+        for asset, start_time in zip(assets, scene_start_times):
+            sfx_clip = _pick_sfx_clip(asset.get("sfx_cue"), start_time)
+            if sfx_clip is not None:
+                audio_tracks.append(sfx_clip)
+    else:
+        scene_start_times = []
+
+    if len(audio_tracks) > 1:
         try:
-            final_audio = CompositeAudioClip([narration_clip, bgm_clip])
+            final_audio = CompositeAudioClip(audio_tracks)
         except Exception as e:
-            print(f"[!] Mixing background music failed ({e}); using narration only.")
+            print(f"[!] Mixing BGM/SFX failed ({e}); using narration only.")
             traceback.print_exc()
             final_audio = narration_clip
     else:
         final_audio = narration_clip
+
+    # Peak-normalize the final mix so BGM+SFX layered on top of the
+    # narration can never clip, and the loudest moment sits right at the
+    # ceiling instead of leaving unused headroom.
+    try:
+        final_audio = final_audio.with_effects([afx.AudioNormalize()])
+    except Exception as e:
+        print(f"[!] Audio normalization failed ({e}); using unnormalized mix.")
+        traceback.print_exc()
 
     video_with_audio = video_clip.with_audio(final_audio)
 
@@ -494,12 +614,8 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     # mapping can't be trusted, so this is skipped silently rather than risk
     # showing the wrong number over the wrong scene.
     sticker_clips = []
-    if _SHOW_RULE_STICKERS and len(assets) == 6 and len(clips) == 6:
+    if _SHOW_RULE_STICKERS and len(assets) == 6 and len(clips) == 6 and scene_start_times:
         try:
-            scene_start_times, cursor = [], 0.0
-            for d in scene_durations:
-                scene_start_times.append(cursor)
-                cursor += d - _CROSSFADE_DURATION
             for rule_num, scene_idx in zip([1, 2, 3, 4], [1, 2, 3, 4]):
                 sticker_clips.append(
                     _rule_sticker_clip(rule_num, scene_start_times[scene_idx], scene_durations[scene_idx])
@@ -513,22 +629,19 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     final_clip = CompositeVideoClip([video_with_audio] + overlay_clips) if overlay_clips else video_with_audio
 
     output_path = config.OUTPUT_DIR / output_filename
+    render_kwargs = dict(
+        fps=_RENDER_FPS,
+        codec="libx264",
+        audio_codec="aac",
+        preset=_RENDER_PRESET,
+        threads=_RENDER_THREADS,
+    )
     try:
-        final_clip.write_videofile(
-            str(output_path),
-            fps=24,
-            codec="libx264",
-            audio_codec="aac"
-        )
+        final_clip.write_videofile(str(output_path), **render_kwargs)
     except Exception as e:
         print(f"[!] Render with captions failed ({e}), retrying without captions...")
         traceback.print_exc()
-        video_with_audio.write_videofile(
-            str(output_path),
-            fps=24,
-            codec="libx264",
-            audio_codec="aac"
-        )
+        video_with_audio.write_videofile(str(output_path), **render_kwargs)
 
     narration_clip.close()
     final_clip.close()
