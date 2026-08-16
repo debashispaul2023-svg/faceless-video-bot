@@ -1,3 +1,4 @@
+import os
 import requests
 import urllib.parse
 import traceback
@@ -5,6 +6,8 @@ import random
 from pathlib import Path
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
+from google import genai
+from google.genai import types
 import config
 
 # Pexels Free API Key. Get one free at https://www.pexels.com/api/
@@ -19,6 +22,60 @@ PEXELS_PHOTO_SEARCH_URL = "https://api.pexels.com/v1/search"
 # introduce visible softness/artifacts once it fills the 9:16 frame).
 _MIN_SOURCE_WIDTH = 720
 
+# How many of the top search results to actually consider per scene before
+# giving up on stock footage and falling back to AI generation.
+_MAX_CANDIDATES_PER_SEARCH = 3
+
+
+def _is_visually_relevant(image_bytes: bytes, scene_description: str) -> bool:
+    """
+    Catches the real failure mode this function exists for: a keyword search
+    for an abstract finance term ("dormancy penalty", "credit utilization")
+    technically matching *some* stock clip, but that clip actually being a
+    card trick, a gas station at night, or a stranger's hands on a
+    typewriter — visually unrelated to the scene it was fetched for.
+
+    Sends the (small, cheap-to-check) preview thumbnail to Gemini and asks
+    a plain yes/no question. A LOOSE thematic match is accepted on purpose
+    (this isn't meant to demand a pixel-perfect match, just to reject
+    obviously-wrong footage).
+
+    Fails OPEN on any error (no API key, quota hit, network issue, etc.) —
+    i.e. if we can't verify, we trust the stock result rather than blocking
+    the whole pipeline on a relevance-check outage. This check is a quality
+    filter, never a hard requirement.
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key or not image_bytes:
+        return True
+
+    try:
+        client = genai.Client(api_key=api_key)
+        prompt = (
+            "You are quality-checking stock footage for a short video. The "
+            f"scene is supposed to show: \"{scene_description}\"\n\n"
+            "Look at the attached image. Does it plausibly, reasonably relate "
+            "to that scene (same general subject, setting, or object)? A "
+            "loose thematic match is fine — it does NOT need to be an exact "
+            "match, just not obviously unrelated. Reply with ONLY one word: "
+            "YES or NO."
+        )
+        response = client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                prompt,
+            ],
+            config=types.GenerateContentConfig(
+                http_options=types.HttpOptions(timeout=15000)
+            ),
+        )
+        answer = (response.text or "").strip().upper()
+        return answer.startswith("Y")
+    except Exception as e:
+        print(f"[i] Relevance check skipped (non-fatal, trusting stock result): {e}")
+        return True
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def _download_file(url: str, save_path: Path):
@@ -28,13 +85,18 @@ def _download_file(url: str, save_path: Path):
         f.write(response.content)
 
 
-def _fetch_stock_video(search_query: str, save_path: Path) -> bool:
-    """Step 1 of the Primary Goal: try a real, free stock VIDEO clip first."""
+def _fetch_stock_video(search_query: str, ai_prompt: str, save_path: Path) -> bool:
+    """
+    Step 1 of the Primary Goal: try a real, free stock VIDEO clip first.
+    Checks up to _MAX_CANDIDATES_PER_SEARCH results' preview thumbnails for
+    actual relevance to `ai_prompt` before downloading the full clip —
+    rejects results that only matched the search keyword by coincidence.
+    """
     if not PEXELS_API_KEY:
         return False
 
     headers = {"Authorization": PEXELS_API_KEY}
-    params = {"query": search_query, "orientation": "portrait", "per_page": 5}
+    params = {"query": search_query, "orientation": "portrait", "per_page": 6}
 
     try:
         res = requests.get(PEXELS_VIDEO_SEARCH_URL, headers=headers, params=params, timeout=15)
@@ -42,51 +104,58 @@ def _fetch_stock_video(search_query: str, save_path: Path) -> bool:
             print(f"[!] Pexels video search returned status {res.status_code} for '{search_query}'.")
             return False
 
-        data = res.json()
-        videos = data.get("videos", [])
+        videos = res.json().get("videos", [])
         if not videos:
             return False
 
-        # Pick randomly among the top few results instead of always the #1
-        # match — otherwise a generic search_query (e.g. "shocked reaction")
-        # deterministically returns the SAME video every time it's searched,
-        # which is why the same clip/thumbnail kept showing up across
-        # different uploads. Some query variety comes from the script
-        # prompt, but this is the safety net for when it doesn't.
-        video_entry = random.choice(videos[:3]) if len(videos) >= 3 else videos[0]
+        # Shuffle so a generic search_query doesn't deterministically try
+        # candidates in the same order every single time it's searched.
+        random.shuffle(videos)
 
-        # Prefer a moderate-resolution vertical (portrait) mp4 file, at or
-        # above _MIN_SOURCE_WIDTH, so we don't download something huge, the
-        # wrong aspect ratio, or something so low-res it looks soft once
-        # cover-cropped up to the 1080px Shorts frame.
-        video_files = video_entry.get("video_files", [])
-        portrait_files = [
-            f for f in video_files
-            if f.get("file_type") == "video/mp4" and f.get("width", 0) < f.get("height", 1)
-        ]
-        candidates = [f for f in portrait_files if f.get("width", 0) >= _MIN_SOURCE_WIDTH] or portrait_files or video_files
+        for video_entry in videos[:_MAX_CANDIDATES_PER_SEARCH]:
+            thumb_url = video_entry.get("image")  # Pexels provides a still preview per video
+            if thumb_url:
+                try:
+                    thumb_bytes = requests.get(thumb_url, timeout=10).content
+                    if not _is_visually_relevant(thumb_bytes, ai_prompt):
+                        print(f"[i] Rejected an irrelevant stock video for '{search_query}' "
+                              f"(keyword matched, but the footage didn't) — trying next candidate.")
+                        continue
+                except Exception:
+                    pass  # if the check itself fails, don't block — fall through and use this candidate
 
-        if not candidates:
-            return False
+            video_files = video_entry.get("video_files", [])
+            portrait_files = [
+                f for f in video_files
+                if f.get("file_type") == "video/mp4" and f.get("width", 0) < f.get("height", 1)
+            ]
+            candidates = [f for f in portrait_files if f.get("width", 0) >= _MIN_SOURCE_WIDTH] or portrait_files or video_files
+            if not candidates:
+                continue
 
-        candidates.sort(key=lambda f: f.get("width", 0))
-        chosen = candidates[len(candidates) // 2]  # middle-of-the-road quality/size
+            candidates.sort(key=lambda f: f.get("width", 0))
+            chosen = candidates[len(candidates) // 2]  # middle-of-the-road quality/size
 
-        _download_file(chosen["link"], save_path)
-        print(f"[+] Downloaded REAL stock VIDEO for: '{search_query}'")
-        return True
+            _download_file(chosen["link"], save_path)
+            print(f"[+] Downloaded REAL stock VIDEO for: '{search_query}' (relevance-checked)")
+            return True
+
+        return False
     except Exception as e:
         print(f"[!] Pexels video fetch failed for '{search_query}': {e}")
         return False
 
 
-def _fetch_stock_image(search_query: str, save_path: Path) -> bool:
-    """Step 2 of the Primary Goal: no video found, try a real stock PHOTO."""
+def _fetch_stock_image(search_query: str, ai_prompt: str, save_path: Path) -> bool:
+    """
+    Step 2 of the Primary Goal: no relevant video found, try a real stock
+    PHOTO instead — same thumbnail-relevance-check-before-download approach.
+    """
     if not PEXELS_API_KEY:
         return False
 
     headers = {"Authorization": PEXELS_API_KEY}
-    params = {"query": search_query, "orientation": "portrait", "per_page": 5}
+    params = {"query": search_query, "orientation": "portrait", "per_page": 6}
 
     try:
         res = requests.get(PEXELS_PHOTO_SEARCH_URL, headers=headers, params=params, timeout=15)
@@ -94,25 +163,43 @@ def _fetch_stock_image(search_query: str, save_path: Path) -> bool:
             print(f"[!] Pexels photo search returned status {res.status_code} for '{search_query}'.")
             return False
 
-        data = res.json()
-        photos = data.get("photos", [])
+        photos = res.json().get("photos", [])
         if not photos:
             return False
 
-        # Same reasoning as the video search above — avoid always fetching
-        # the #1 result so generic queries don't produce identical images.
-        photo_entry = random.choice(photos[:3]) if len(photos) >= 3 else photos[0]
-        photo_url = photo_entry["src"]["portrait"]
-        _download_file(photo_url, save_path)
-        print(f"[+] Downloaded REAL stock IMAGE for: '{search_query}'")
-        return True
+        random.shuffle(photos)
+
+        for photo_entry in photos[:_MAX_CANDIDATES_PER_SEARCH]:
+            src = photo_entry.get("src", {})
+            preview_url = src.get("tiny") or src.get("small")
+            if preview_url:
+                try:
+                    preview_bytes = requests.get(preview_url, timeout=10).content
+                    if not _is_visually_relevant(preview_bytes, ai_prompt):
+                        print(f"[i] Rejected an irrelevant stock photo for '{search_query}' "
+                              f"(keyword matched, but the image didn't) — trying next candidate.")
+                        continue
+                except Exception:
+                    pass
+
+            photo_url = src.get("portrait")
+            if not photo_url:
+                continue
+
+            _download_file(photo_url, save_path)
+            print(f"[+] Downloaded REAL stock IMAGE for: '{search_query}' (relevance-checked)")
+            return True
+
+        return False
     except Exception as e:
         print(f"[!] Pexels photo fetch failed for '{search_query}': {e}")
         return False
 
 
 def _generate_ai_image(ai_prompt: str, save_path: Path, seed: int) -> bool:
-    """Fallback Goal: only reached if BOTH stock searches above found nothing."""
+    """Fallback Goal: reached if BOTH stock searches above found nothing
+    relevant — this is deliberately more likely to trigger now than before,
+    since irrelevant stock results get rejected instead of accepted."""
     enhanced_prompt = f"{ai_prompt}, 8k resolution, cinematic lighting, 9:16 vertical"
     encoded_prompt = urllib.parse.quote(enhanced_prompt)
     url = (
@@ -120,7 +207,7 @@ def _generate_ai_image(ai_prompt: str, save_path: Path, seed: int) -> bool:
         f"?width=1080&height=1920&model=flux&seed={seed}"
     )
 
-    print(f"[+] No stock footage found — generating AI visual for: '{ai_prompt[:60]}...'")
+    print(f"[+] No relevant stock footage found — generating AI visual for: '{ai_prompt[:60]}...'")
     try:
         _download_file(url, save_path)
         return True
@@ -133,28 +220,32 @@ def _generate_ai_image(ai_prompt: str, save_path: Path, seed: int) -> bool:
 def generate_visual_assets(visual_scenes: list) -> list:
     """
     Stock-First, AI-Fallback visual pipeline, tuned for YouTube Shorts (9:16,
-    1080x1920) compliance:
+    1080x1920) compliance AND topical relevance:
       1. Try a real, free stock VIDEO clip (Pexels Videos API), portrait
-         orientation, at or above _MIN_SOURCE_WIDTH so the render-time
-         cover-crop never has to upscale a soft/low-res source.
-      2. If that returns nothing, try a real, free stock PHOTO (Pexels Photos API).
-      3. ONLY if both of the above fail/return zero results, fall back to
-         generating the visual with AI (Pollinations Flux) at 1080x1920.
+         orientation, at or above _MIN_SOURCE_WIDTH — but ONLY after a cheap
+         Gemini-vision relevance check on the preview thumbnail confirms the
+         footage actually relates to the scene (not just the search keyword).
+      2. If that returns nothing relevant, try a real, free stock PHOTO
+         (Pexels Photos API), same relevance check.
+      3. ONLY if both of the above fail to find anything relevant, fall back
+         to generating the visual with AI (Pollinations Flux) at 1080x1920 —
+         this guarantees the visual actually matches the topic, since it's
+         generated FROM the topic description rather than searched for.
 
     Final framing to exactly 1080x1920 without stretching (cover-resize +
     center-crop) happens in video_renderer.py, which is the single source of
-    truth for frame compliance — this file only guarantees each SOURCE asset
-    is portrait-oriented and reasonably high-resolution going in.
+    truth for frame compliance — this file guarantees each source asset is
+    both portrait-oriented/high-resolution AND topically relevant going in.
 
     `visual_scenes` is a list of dicts, each with:
         - "search_query": short broad term(s) for the stock search
-        - "ai_prompt":    detailed description for the AI fallback
+        - "ai_prompt":    detailed description for the AI fallback — also
+                          used as the relevance-check reference, so make
+                          this specific and concrete for best results
         - "sfx_cue":      optional — a short keyword (e.g. "whoosh") that
                           video_renderer.py can match against files in
                           assets/sfx/ to mix in a sound effect at this
-                          scene's start, at 0.7 volume. Safe to omit; simply
-                          passed through unchanged if present so this stays
-                          forward-compatible with scripts that don't set it.
+                          scene's start, at 0.7 volume. Safe to omit.
 
     For backward compatibility, plain strings are also accepted (treated as
     both the search query and the AI prompt, with no sfx_cue).
@@ -180,16 +271,18 @@ def generate_visual_assets(visual_scenes: list) -> list:
         video_path = config.OUTPUT_DIR / f"scene_{idx}.mp4"
         image_path = config.OUTPUT_DIR / f"scene_{idx}.jpg"
 
-        # --- PRIMARY GOAL: real internet footage --------------------------
-        if search_query and _fetch_stock_video(search_query, video_path):
+        # --- PRIMARY GOAL: real internet footage, but only if it's actually
+        # relevant to what this scene needs to show ---------------------
+        if search_query and _fetch_stock_video(search_query, ai_prompt, video_path):
             assets.append({"path": video_path, "type": "video", "sfx_cue": sfx_cue})
             continue
 
-        if search_query and _fetch_stock_image(search_query, image_path):
+        if search_query and _fetch_stock_image(search_query, ai_prompt, image_path):
             assets.append({"path": image_path, "type": "image", "sfx_cue": sfx_cue})
             continue
 
-        # --- FALLBACK GOAL: AI generation (only if stock search failed) ---
+        # --- FALLBACK GOAL: AI generation (stock search found nothing
+        # relevant, not just nothing at all) ------------------------------
         seed = int(time.time()) + idx
         if _generate_ai_image(ai_prompt or search_query, image_path, seed):
             assets.append({"path": image_path, "type": "image", "sfx_cue": sfx_cue})
