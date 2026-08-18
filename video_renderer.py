@@ -32,6 +32,8 @@ _CROSSFADE_DURATION = 0.4
 _KEN_BURNS_ZOOM = 0.12
 _CAPTION_FONT_SIZE = 70
 _CAPTION_CHUNK_SIZE = 3  # words shown on screen together, with one highlighted at a time
+_CAPTION_SIDE_MARGIN = 40  # px kept clear on each side so text can never touch/overflow the frame edge
+_CAPTION_MAX_TEXT_WIDTH = config.VIDEO_WIDTH - (2 * _CAPTION_SIDE_MARGIN)
 
 # --- YouTube Shorts compliance -------------------------------------------
 # Subtitle Safe Zone: Shorts UI (like/comment/share rail, caption/profile
@@ -93,6 +95,40 @@ _SHOW_RULE_STICKERS = True
 _RULE_STICKER_SIZE = 260
 _RULE_STICKER_TOP_MARGIN = 140
 _RULE_STICKER_POP_IN_SECONDS = 0.25
+
+# --- Creator-style editing pack (bold emphasis text, percentage ring,
+# circular insert, chat-bubble hook) --------------------------------------
+# A word is treated as an "emphasis" word if it was written in ALL CAPS in
+# the original script (researcher.py's prompt already asks Gemini to write
+# key emphasis words this way, e.g. "NEVER", "CHANGES EVERYTHING") — so this
+# reuses a signal that already exists instead of guessing at emphasis.
+_CAPTION_EMPHASIS_FONT_SIZE = 94  # vs _CAPTION_FONT_SIZE 70 — visibly bigger
+_CAPTION_EMPHASIS_COLOR = "#FF3B30"  # punchy red-orange, distinct from the yellow karaoke-highlight
+_CAPTION_NORMAL_HIGHLIGHT_COLOR = "yellow"
+
+# Percentage/stat ring — auto-triggers the first time the script mentions a
+# "NN%" or "NN percent" figure (very common in this niche: utilization,
+# savings rate, retirement %, etc.), shown as a filling ring with the number
+# in the middle, at roughly the moment it's spoken.
+_SHOW_PERCENTAGE_RING = True
+_PERCENTAGE_RING_SIZE = 320
+_PERCENTAGE_RING_COLOR = (255, 59, 48, 255)  # matches the emphasis text color
+_PERCENTAGE_RING_DURATION = 2.6
+_PERCENTAGE_PATTERN = re.compile(r'(\d{1,3})\s*(?:%|percent)\b', re.IGNORECASE)
+
+# Circular video/photo insert (dark blurred-out backdrop, footage masked
+# into a circle) — applied to at most ONE scene per video, and not every
+# video, purely for visual variety instead of every Short looking identical.
+_CIRCLE_INSERT_ENABLED = True
+_CIRCLE_INSERT_CHANCE = 0.5
+_CIRCLE_INSERT_SIZE_RATIO = 0.62  # relative to VIDEO_WIDTH
+
+# A rounded speech-bubble graphic behind the very first caption chunk (the
+# opening hook) only — makes the first 1-2 seconds pop harder before the
+# karaoke captions take over for the rest of the video.
+_SHOW_HOOK_BUBBLE = True
+_HOOK_BUBBLE_FONT_SIZE = 48
+_HOOK_BUBBLE_Y_RATIO = 0.30  # sits well above the main caption band
 
 
 def _resolve_font_path() -> str:
@@ -157,71 +193,291 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
     # offset, so it stays correct even if VIDEO_HEIGHT is ever changed.
     y_pos = int(config.VIDEO_HEIGHT * _CAPTION_Y_RATIO)
 
-    # Build chunks that respect sentence boundaries: a chunk can be shorter
-    # than _CAPTION_CHUNK_SIZE if a word ends a sentence, so on-screen text
-    # never mixes the tail of one sentence with the start of the next
-    # (previously produced confusing groups like "RATE. THIRD, HIJACK").
+    # Build chunks that respect sentence boundaries AND screen width: a
+    # chunk breaks early if a word ends a sentence (so on-screen text never
+    # mixes the tail of one sentence with the start of the next), OR if
+    # adding the next word would run the chunk past the safe on-screen
+    # width — long words like "WILLPOWER" previously got grouped with two
+    # neighbours regardless of how wide the combined text actually was,
+    # which pushed the start of the line off the LEFT edge of the frame
+    # (center-alignment math went negative). Checking real pixel width here
+    # is what actually prevents that, not just capping the word count.
     caption_chunks = []
     current_chunk = []
+    current_width = 0.0
     for word_entry in word_times:
-        current_chunk.append(word_entry)
         word_text = word_entry[0].strip()
-        ends_sentence = bool(re.search(r'[.!?]+$', word_text)) or word_text == "..."
-        if len(current_chunk) >= _CAPTION_CHUNK_SIZE or ends_sentence:
+        word_width = font.getlength(word_text.upper())
+        projected_width = current_width + (space_w if current_chunk else 0) + word_width
+
+        if current_chunk and (projected_width > _CAPTION_MAX_TEXT_WIDTH or len(current_chunk) >= _CAPTION_CHUNK_SIZE):
             caption_chunks.append(current_chunk)
             current_chunk = []
+            current_width = 0.0
+            projected_width = word_width
+
+        current_chunk.append(word_entry)
+        current_width = projected_width
+
+        ends_sentence = bool(re.search(r'[.!?]+$', word_text)) or word_text == "..."
+        if ends_sentence:
+            caption_chunks.append(current_chunk)
+            current_chunk = []
+            current_width = 0.0
     if current_chunk:
         caption_chunks.append(current_chunk)
 
-    for chunk in caption_chunks:
+    emphasis_font = ImageFont.truetype(font_path, _CAPTION_EMPHASIS_FONT_SIZE)
+
+    def _word_style(original_word: str):
+        """Emphasis words (already ALL CAPS in the source script, e.g.
+        'NEVER', 'CHANGES EVERYTHING') render bigger and in the accent
+        color throughout — inspired by the reference video's mixed-size,
+        color-punched keyword style, instead of every word being a uniform
+        size. Falls back to the normal karaoke white/yellow style otherwise."""
+        stripped = re.sub(r'[^A-Za-z]', '', original_word)
+        is_emphasis = len(stripped) > 1 and original_word.strip().isupper()
+        if is_emphasis:
+            return emphasis_font, _CAPTION_EMPHASIS_FONT_SIZE, _CAPTION_EMPHASIS_COLOR
+        return font, _CAPTION_FONT_SIZE, None  # None = use the normal two-layer white/yellow treatment
+
+    for chunk_index, chunk in enumerate(caption_chunks):
         if not chunk:
             continue
 
-        chunk_words_upper = [w.upper() for (w, _, _) in chunk]
-        widths = [font.getlength(w) for w in chunk_words_upper]
-        total_w = sum(widths) + space_w * max(0, len(chunk) - 1)
-        start_x = (config.VIDEO_WIDTH - total_w) / 2
+        # Per-word metrics, since emphasis words use a bigger font than
+        # normal words within the SAME on-screen chunk.
+        word_meta = []  # (word, start, end, font_obj, font_size, emphasis_color_or_None, width)
+        for (word, w_start, w_end) in chunk:
+            word_upper = word.strip().upper()
+            f_obj, f_size, emphasis_color = _word_style(word)
+            width = f_obj.getlength(word_upper) if word_upper else 0
+            word_meta.append((word_upper, w_start, w_end, f_obj, f_size, emphasis_color, width))
 
-        chunk_start_time = chunk[0][1]
-        chunk_end_time = chunk[-1][2]
-        chunk_duration = max(0.05, chunk_end_time - chunk_start_time)
+        total_w = sum(w[6] for w in word_meta) + space_w * max(0, len(word_meta) - 1)
+        # Defensive clamp: even with the width-aware chunking above, a
+        # single word longer than the safe width alone (rare, but possible)
+        # would still center to a negative x. Clamping keeps it fully
+        # on-screen (small edge overlap allowed) instead of running off
+        # the left edge.
+        start_x = max((config.VIDEO_WIDTH - total_w) / 2, _CAPTION_SIDE_MARGIN)
 
-        # Base layer: the whole chunk, visible in white for its full duration.
-        # Bold font + thick black stroke = high contrast against any background.
-        base_text = " ".join(chunk_words_upper)
-        base_clip = (
-            TextClip(
-                font=font_path, text=base_text, font_size=_CAPTION_FONT_SIZE,
-                color='white', stroke_color='black', stroke_width=4,
-                method='label'
-            )
-            .with_position((start_x, y_pos))
-            .with_start(chunk_start_time)
-            .with_duration(chunk_duration)
-        )
-        clips.append(base_clip)
-
-        # Highlight layer: each word, in yellow, ONLY during its own slice —
-        # sits on top of (and visually replaces) the white word beneath it.
         cursor_x = start_x
-        for (word, w_start, w_end), width in zip(chunk, widths):
-            if not word:
+        for word_upper, w_start, w_end, f_obj, f_size, emphasis_color, width in word_meta:
+            if not word_upper:
                 cursor_x += width + space_w
                 continue
-            highlight_clip = (
-                TextClip(
-                    font=font_path, text=word.upper(), font_size=_CAPTION_FONT_SIZE,
-                    color='yellow', stroke_color='black', stroke_width=4,
-                    method='label'
+
+            word_duration = max(0.05, w_end - w_start)
+            # Emphasis words stay visible (in the accent color) for the
+            # WHOLE chunk's on-screen time, not just their own instant —
+            # matches the reference video's consistently-bold "Think" style
+            # rather than a brief flash.
+            chunk_duration = max(0.05, chunk[-1][2] - chunk[0][1])
+
+            if emphasis_color:
+                word_clip = (
+                    TextClip(
+                        font=font_path, text=word_upper, font_size=f_size,
+                        color=emphasis_color, stroke_color='black', stroke_width=5,
+                        method='label'
+                    )
+                    .with_position((cursor_x, y_pos - (f_size - _CAPTION_FONT_SIZE) // 2))
+                    .with_start(chunk[0][1])
+                    .with_duration(chunk_duration)
                 )
-                .with_position((cursor_x, y_pos))
-                .with_start(w_start)
-                .with_duration(max(0.05, w_end - w_start))
-            )
-            clips.append(highlight_clip)
+                clips.append(word_clip)
+            else:
+                # Normal word: white base for the whole chunk, then a
+                # yellow highlight layered on top only during its own
+                # timing slice — the existing karaoke behavior.
+                base_clip = (
+                    TextClip(
+                        font=font_path, text=word_upper, font_size=f_size,
+                        color='white', stroke_color='black', stroke_width=4,
+                        method='label'
+                    )
+                    .with_position((cursor_x, y_pos))
+                    .with_start(chunk[0][1])
+                    .with_duration(chunk_duration)
+                )
+                clips.append(base_clip)
+
+                highlight_clip = (
+                    TextClip(
+                        font=font_path, text=word_upper, font_size=f_size,
+                        color=_CAPTION_NORMAL_HIGHLIGHT_COLOR, stroke_color='black', stroke_width=4,
+                        method='label'
+                    )
+                    .with_position((cursor_x, y_pos))
+                    .with_start(w_start)
+                    .with_duration(word_duration)
+                )
+                clips.append(highlight_clip)
+
             cursor_x += width + space_w
 
+        # Hook bubble: a rounded speech-bubble graphic behind ONLY the very
+        # first caption chunk, sitting above the main caption band — see
+        # _hook_bubble_clip() below. Best-effort; skipped silently on error.
+        if chunk_index == 0 and _SHOW_HOOK_BUBBLE:
+            try:
+                bubble_text = " ".join(w[0] for w in word_meta if w[0])
+                clips.insert(0, _hook_bubble_clip(bubble_text, chunk[0][1], max(0.05, chunk[-1][2] - chunk[0][1])))
+            except Exception as e:
+                print(f"[!] Hook bubble overlay failed, continuing without it: {e}")
+
     return clips
+
+
+def _hook_bubble_clip(text: str, start_time: float, duration: float):
+    """
+    A dark, rounded-rectangle speech-bubble graphic with the hook text on
+    it, positioned above the main caption band — inspired by the reference
+    video's chat-bubble caption over its opening line. Single-line only
+    (the text passed in is already a caption chunk, which is already
+    width-capped, so it comfortably fits on one line at this smaller font).
+    """
+    font = ImageFont.truetype(_resolve_font_path(), _HOOK_BUBBLE_FONT_SIZE)
+    padding_x, padding_y = 34, 20
+
+    dummy_img = Image.new("RGBA", (10, 10))
+    dummy_draw = ImageDraw.Draw(dummy_img)
+    text_w = dummy_draw.textlength(text, font=font)
+    bbox = dummy_draw.textbbox((0, 0), text, font=font)
+    text_h = bbox[3] - bbox[1]
+
+    box_w = int(text_w + 2 * padding_x)
+    box_h = int(text_h + 2 * padding_y)
+
+    img = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([0, 0, box_w - 1, box_h - 1], radius=box_h // 2, fill=(15, 15, 15, 220))
+    draw.text((padding_x, padding_y - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
+
+    frame = np.array(img)
+    rgb_clip = ImageClip(frame[:, :, :3]).with_duration(duration)
+    alpha = frame[:, :, 3].astype("float32") / 255.0
+    mask_clip = ImageClip(alpha, is_mask=True).with_duration(duration)
+    rgb_clip = rgb_clip.with_mask(mask_clip)
+
+    x_pos = (config.VIDEO_WIDTH - box_w) / 2
+    y_pos = int(config.VIDEO_HEIGHT * _HOOK_BUBBLE_Y_RATIO)
+    return rgb_clip.with_position((x_pos, y_pos)).with_start(start_time)
+
+
+def _draw_percentage_ring_frame(percentage: int) -> np.ndarray:
+    """
+    A filling ring with the percentage number centered inside it — drawn
+    entirely with PIL (no external asset, no AI generation), directly
+    inspired by the reference video's pie-chart infographic moment.
+    """
+    size = _PERCENTAGE_RING_SIZE
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    pad, ring_width = 24, 24
+    bbox = [pad, pad, size - pad, size - pad]
+
+    draw.ellipse(bbox, fill=(20, 20, 20, 210))  # dark backing disc for contrast on any background
+    draw.arc(bbox, start=-90, end=270, fill=(255, 255, 255, 70), width=ring_width)  # track
+    sweep = 360 * max(0, min(percentage, 100)) / 100
+    draw.arc(bbox, start=-90, end=-90 + sweep, fill=_PERCENTAGE_RING_COLOR, width=ring_width)  # progress
+
+    font = ImageFont.truetype(_resolve_font_path(), int(size * 0.26))
+    text = f"{percentage}%"
+    tb = draw.textbbox((0, 0), text, font=font)
+    tw, th = tb[2] - tb[0], tb[3] - tb[1]
+    draw.text(((size - tw) / 2 - tb[0], (size - th) / 2 - tb[1]), text, font=font, fill=(255, 255, 255, 255))
+
+    return np.array(img)
+
+
+def _percentage_ring_clip(percentage: int, start_time: float, duration: float):
+    """Positioned, pop-in-animated version of the percentage ring frame,
+    shown just above the caption band for `duration` seconds."""
+    frame = _draw_percentage_ring_frame(percentage)
+    rgb = frame[:, :, :3]
+    alpha = frame[:, :, 3].astype("float32") / 255.0
+
+    img_clip = ImageClip(rgb).with_duration(duration)
+    mask_clip = ImageClip(alpha, is_mask=True).with_duration(duration)
+    img_clip = img_clip.with_mask(mask_clip)
+
+    pop_in = 0.25
+
+    def scale_at(t):
+        if t < pop_in:
+            return 0.6 + 0.4 * (t / pop_in)
+        return 1.0
+
+    y_pos = int(config.VIDEO_HEIGHT * 0.30) - _PERCENTAGE_RING_SIZE // 2
+    img_clip = (
+        img_clip.resized(scale_at)
+        .with_position(("center", y_pos))
+        .with_start(start_time)
+    )
+    return img_clip
+
+
+def _detect_percentage_moment(narration_text: str, audio_path: Path, total_duration: float):
+    """
+    Best-effort: finds the first 'NN%' / 'NN percent' mentioned in the
+    script and figures out roughly when it's spoken, so a percentage ring
+    can pop up at that exact moment. Returns (percentage, start_time) or
+    None if no percentage is mentioned or timing can't be determined —
+    never raises.
+    """
+    try:
+        match = _PERCENTAGE_PATTERN.search(narration_text)
+        if not match:
+            return None
+        percentage = int(match.group(1))
+        if not (0 < percentage <= 100):
+            return None
+
+        words = narration_text.split()
+        if not words:
+            return None
+
+        timings = _load_word_timings(audio_path)
+        if timings and len(timings) >= len(words) * 0.6:
+            word_times = [(t.get("text", "").strip() or "", t["start"], t["end"]) for t in timings]
+        else:
+            per_word = total_duration / len(words)
+            word_times = [(w, i * per_word, (i + 1) * per_word) for i, w in enumerate(words)]
+
+        for word, start, _end in word_times:
+            if re.search(r'\d', word) or "percent" in word.lower():
+                return percentage, start
+
+        return percentage, total_duration * 0.4  # rough fallback placement
+    except Exception:
+        return None
+
+
+def _circular_insert_clip(source_clip, duration: float, target_w: int, target_h: int):
+    """
+    Wraps `source_clip` in a circular mask over a darkened, cover-cropped
+    copy of itself as the backdrop — inspired by the reference video's
+    circular photo/video insert technique. Returns a full-frame
+    (target_w x target_h) CompositeVideoClip; never raises (caller should
+    still wrap the call site in try/except as a courtesy, since this
+    touches several moviepy effects at once).
+    """
+    diameter = int(target_w * _CIRCLE_INSERT_SIZE_RATIO)
+
+    backdrop = _cover_resize_and_crop(source_clip, target_w, target_h)
+    backdrop = backdrop.with_effects([vfx.MultiplyColor(0.25)])  # darken so the circle pops
+
+    foreground = _cover_resize_and_crop(source_clip, diameter, diameter)
+
+    mask_img = Image.new("L", (diameter, diameter), 0)
+    ImageDraw.Draw(mask_img).ellipse([3, 3, diameter - 3, diameter - 3], fill=255)
+    mask_array = np.array(mask_img).astype("float32") / 255.0
+    circle_mask = ImageClip(mask_array, is_mask=True).with_duration(duration)
+    foreground = foreground.with_mask(circle_mask).with_position("center")
+
+    return CompositeVideoClip([backdrop, foreground], size=(target_w, target_h)).with_duration(duration)
 
 
 def _pick_background_music(duration: float):
@@ -529,6 +785,22 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
         raise RuntimeError("All visual assets failed to load; cannot render video.")
 
     scenes_consistent = len(clips) == len(assets)
+
+    # Circular video/photo insert — applied to at most one scene, and not
+    # every video (see _CIRCLE_INSERT_CHANCE), purely for visual variety so
+    # the channel doesn't look identically-templated on every upload. Never
+    # applied to scene 0 (the hook) since that scene is already shorter and
+    # doing the most work to stop the scroll — keeping it full-bleed.
+    if scenes_consistent and _CIRCLE_INSERT_ENABLED and len(clips) > 1 and random.random() < _CIRCLE_INSERT_CHANCE:
+        try:
+            circle_idx = random.randint(1, len(clips) - 1)
+            clips[circle_idx] = _circular_insert_clip(
+                clips[circle_idx], scene_durations[circle_idx], config.VIDEO_WIDTH, config.VIDEO_HEIGHT
+            )
+            print(f"[+] Applied circular insert framing to scene {circle_idx}.")
+        except Exception as e:
+            print(f"[!] Circular insert framing failed, continuing with the normal full-bleed scene: {e}")
+            traceback.print_exc()
     if not scenes_consistent:
         duration_per_asset = narration_clip.duration / len(clips) + _CROSSFADE_DURATION
         clips = [c.with_duration(duration_per_asset) for c in clips]
@@ -625,7 +897,24 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
             traceback.print_exc()
             sticker_clips = []
 
-    overlay_clips = captions + progress_bar_clips + sticker_clips
+    # Percentage/stat ring — pops up once, at roughly the moment the script
+    # first mentions a "NN%" figure (common in this niche: utilization,
+    # savings rate, etc.) — see _detect_percentage_moment() above.
+    percentage_ring_clips = []
+    if _SHOW_PERCENTAGE_RING:
+        try:
+            moment = _detect_percentage_moment(narration_text, audio_path, narration_clip.duration)
+            if moment:
+                percentage, start_time = moment
+                percentage_ring_clips.append(
+                    _percentage_ring_clip(percentage, start_time, _PERCENTAGE_RING_DURATION)
+                )
+                print(f"[+] Added a {percentage}% stat ring at {start_time:.2f}s.")
+        except Exception as e:
+            print(f"[!] Percentage ring overlay failed, continuing without it: {e}")
+            traceback.print_exc()
+
+    overlay_clips = captions + progress_bar_clips + sticker_clips + percentage_ring_clips
     final_clip = CompositeVideoClip([video_with_audio] + overlay_clips) if overlay_clips else video_with_audio
 
     output_path = config.OUTPUT_DIR / output_filename
