@@ -26,10 +26,21 @@ _FONT_CANDIDATES = [
     str(config.ASSETS_DIR / "fonts" / "CaptionFont-Bold.ttf"),
 ]
 
-# How much two neighbouring scenes overlap/blend into each other.
-_CROSSFADE_DURATION = 0.4
-# How much an image "grows" over its on-screen duration for the Ken Burns effect.
-_KEN_BURNS_ZOOM = 0.12
+# How much two neighbouring scenes overlap/blend into each other. Kept
+# short on purpose — a long crossfade feels soft/slow; a quick one reads as
+# a punchier cut, which matches short-form editing much better.
+_CROSSFADE_DURATION = 0.18
+# How much an image/video "grows" over its on-screen duration for the Ken
+# Burns effect (eased, not linear — see _punch_zoom_scale_function below).
+_KEN_BURNS_ZOOM = 0.22
+# A quick "hit" at the very start of every scene: the shot briefly
+# overshoots zoomed-in, then rapidly settles back to its normal Ken Burns
+# starting scale. This is what actually sells a cut as having impact,
+# instead of every scene just calmly appearing — the single biggest lever
+# for making static stock footage feel like it was "edited" rather than
+# just slideshow'd together.
+_PUNCH_IN_DURATION = 0.18
+_PUNCH_IN_OVERSHOOT = 0.10
 _CAPTION_FONT_SIZE = 70
 _CAPTION_CHUNK_SIZE = 3  # words shown on screen together, with one highlighted at a time
 _CAPTION_SIDE_MARGIN = 40  # px kept clear on each side so text can never touch/overflow the frame edge
@@ -589,25 +600,50 @@ def _cover_resize_and_crop(clip, target_w: int, target_h: int):
     )
 
 
+def _punch_zoom_scale_function(duration: float, zoom_in: bool):
+    """
+    Builds the per-frame scale function used by BOTH image (Ken Burns) and
+    video scenes, so every scene in the video gets the same editing
+    treatment instead of stock video clips playing back completely static
+    while only images animate. Combines two motions:
+      1. A quick punch-in at the very start of the scene — a brief zoomed-in
+         overshoot that rapidly settles — which is what actually reads as
+         "this cut has impact" rather than a shot just calmly appearing.
+      2. The regular slow Ken Burns drift across the rest of the scene,
+         eased (not linear) so it doesn't feel mechanical.
+    """
+    def scale_at(t):
+        progress = min(max((t / duration) if duration > 0 else 0, 0), 1)
+        eased = 1 - (1 - progress) ** 2  # ease-out
+        if zoom_in:
+            base = 1.0 + _KEN_BURNS_ZOOM * eased
+        else:
+            base = (1.0 + _KEN_BURNS_ZOOM) - _KEN_BURNS_ZOOM * eased
+
+        if t < _PUNCH_IN_DURATION and duration > _PUNCH_IN_DURATION * 2:
+            punch_progress = t / _PUNCH_IN_DURATION
+            eased_punch = 1 - (1 - punch_progress) ** 3  # ease-out cubic: fast hit, smooth settle
+            overshoot = _PUNCH_IN_OVERSHOOT * (1 - eased_punch)
+            return base + overshoot
+
+        return base
+    return scale_at
+
+
 def _ken_burns_image_clip(path: Path, duration: float, target_w: int, target_h: int):
     """
-    Turns a still photo into a slow zoom (Ken Burns) clip. We first cover-fit
-    the image to the target frame, then animate its scale (zooming in OR out,
-    chosen at random per scene for variety) while it sits centred on a
-    fixed-size canvas — anything that grows past the frame edge is simply
-    clipped by the canvas, which is the standard, artefact-free way to do
-    this in moviepy.
+    Turns a still photo into a punch-in + slow zoom (Ken Burns) clip. We
+    first cover-fit the image to the target frame, then animate its scale
+    (zooming in OR out, chosen at random per scene for variety) while it
+    sits centred on a fixed-size canvas — anything that grows past the
+    frame edge is simply clipped by the canvas, which is the standard,
+    artefact-free way to do this in moviepy.
     """
     base = ImageClip(str(path)).with_duration(duration)
     base = _cover_resize_and_crop(base, target_w, target_h)
 
     zoom_in = random.choice([True, False])
-
-    def scale_at(t):
-        progress = (t / duration) if duration > 0 else 0
-        if zoom_in:
-            return 1.0 + _KEN_BURNS_ZOOM * progress
-        return (1.0 + _KEN_BURNS_ZOOM) - _KEN_BURNS_ZOOM * progress
+    scale_at = _punch_zoom_scale_function(duration, zoom_in)
 
     animated = (
         base.resized(scale_at)
@@ -622,9 +658,10 @@ def _ken_burns_image_clip(path: Path, duration: float, target_w: int, target_h: 
 def _clip_for_asset(asset: dict, duration: float):
     """
     Turns one visual asset into a moviepy clip that lasts exactly `duration`
-    seconds, filling the 9:16 frame via cover-crop (never stretched):
-      - real stock VIDEO clips are looped/trimmed and played as-is
-      - still IMAGES get a slow Ken Burns zoom instead of sitting frozen
+    seconds, filling the 9:16 frame via cover-crop (never stretched), with
+    the SAME punch-in + Ken Burns treatment applied whether it's a real
+    stock video or a still image — previously only images animated at all,
+    which made video scenes feel comparatively flat/static.
     """
     path = asset["path"]
     asset_type = asset.get("type", "image")
@@ -638,7 +675,11 @@ def _clip_for_asset(asset: dict, duration: float):
         clip = raw.subclipped(0, duration)
         clip = _cover_resize_and_crop(clip, target_w, target_h)
         clip = clip.without_audio()  # keep only the narration track
-        return clip.with_duration(duration)
+
+        zoom_in = random.choice([True, False])
+        scale_at = _punch_zoom_scale_function(duration, zoom_in)
+        animated = clip.resized(scale_at).with_position(("center", "center")).with_duration(duration)
+        return CompositeVideoClip([animated], size=(target_w, target_h)).with_duration(duration)
 
     # image -> Ken Burns
     return _ken_burns_image_clip(path, duration, target_w, target_h)
