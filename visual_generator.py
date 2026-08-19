@@ -32,13 +32,17 @@ def _is_visually_relevant(image_bytes: bytes, scene_description: str) -> bool:
     Catches the real failure mode this function exists for: a keyword search
     for an abstract finance term ("dormancy penalty", "credit utilization")
     technically matching *some* stock clip, but that clip actually being a
-    card trick, a gas station at night, or a stranger's hands on a
-    typewriter — visually unrelated to the scene it was fetched for.
+    card trick, a gas station at night, decorative craft stickers, or a
+    stranger's hands on a typewriter — visually unrelated to the scene it
+    was fetched for.
 
     Sends the (small, cheap-to-check) preview thumbnail to Gemini and asks
-    a plain yes/no question. A LOOSE thematic match is accepted on purpose
-    (this isn't meant to demand a pixel-perfect match, just to reject
-    obviously-wrong footage).
+    a plain yes/no question. This is DELIBERATELY strict: an earlier, looser
+    version of this prompt ("a loose thematic match is fine") let things
+    like generic craft stickers pass for a scene described as "a paper
+    cutout sticker with a number on it" — same rough object category, wrong
+    actual content. The image now has to depict the SPECIFIC subject
+    described, not just a vague/coincidental category match.
 
     Fails OPEN on any error (no API key, quota hit, network issue, etc.) —
     i.e. if we can't verify, we trust the stock result rather than blocking
@@ -52,12 +56,19 @@ def _is_visually_relevant(image_bytes: bytes, scene_description: str) -> bool:
     try:
         client = genai.Client(api_key=api_key)
         prompt = (
-            "You are quality-checking stock footage for a short video. The "
-            f"scene is supposed to show: \"{scene_description}\"\n\n"
-            "Look at the attached image. Does it plausibly, reasonably relate "
-            "to that scene (same general subject, setting, or object)? A "
-            "loose thematic match is fine — it does NOT need to be an exact "
-            "match, just not obviously unrelated. Reply with ONLY one word: "
+            "You are strictly quality-checking stock footage for a short "
+            f"video. The scene is supposed to show: \"{scene_description}\"\n\n"
+            "Look at the attached image. Would a viewer who just heard that "
+            "exact description immediately recognize this image as showing "
+            "it? REJECT the image if it only shares a vague category or a "
+            "coincidental keyword/shape/color match — for example: a generic "
+            "office desk for 'reviewing a bank statement', decorative craft "
+            "stickers for 'a paper cutout sticker with a number on it', or "
+            "any object that superficially resembles the description without "
+            "actually being it. Only ACCEPT a genuine, direct visual match to "
+            "the specific subject and action described — a reasonable person "
+            "would say 'yes, that's clearly it,' not 'I guess that's kind of "
+            "related.' Reply with ONLY one word: "
             "YES or NO."
         )
         response = client.models.generate_content(
