@@ -156,6 +156,38 @@ def _load_word_timings(audio_path: Path):
     return None
 
 
+def _compute_sentence_start_times(word_times: list) -> list:
+    """
+    Groups a (word, start, end) timeline into sentences (same end-of-
+    sentence detection the caption chunker uses: '.', '!', '?', or an
+    ellipsis), returning (sentence_text, start_time, end_time) per
+    sentence. This is what lets scene cuts and rule-number stickers land
+    exactly where each sentence actually starts being spoken, using the
+    SAME real timing data the captions are already built from — instead of
+    an artificial even split that can silently drift out of sync with what
+    the narration is saying at that moment.
+    """
+    sentences = []
+    current = []
+    for word_entry in word_times:
+        current.append(word_entry)
+        word_text = word_entry[0].strip()
+        ends_sentence = bool(re.search(r'[.!?]+$', word_text)) or word_text == "..."
+        if ends_sentence:
+            sentences.append(current)
+            current = []
+    if current:
+        sentences.append(current)
+
+    result = []
+    for sent in sentences:
+        if not sent:
+            continue
+        text = " ".join(w[0] for w in sent)
+        result.append((text, sent[0][1], sent[-1][2]))
+    return result
+
+
 def _build_captions(narration_text: str, total_duration: float, audio_path: Path):
     """
     Builds karaoke-style captions: a few words are shown on screen together
@@ -755,12 +787,40 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
               f"{_MIN_VIDEO_DURATION}s Shorts minimum — script should be lengthened "
               f"upstream (researcher.py); proceeding anyway rather than blocking the pipeline.")
 
-    # Every scene gets an even slice, EXCEPT the hook (first scene), which
-    # runs shorter on purpose — see _HOOK_DURATION_RATIO above. The time
-    # saved there is spread across the rest so the total still matches the
-    # narration exactly.
+    # --- Real sentence-level timing (fixes visual/audio sync drift) --------
+    # Captions are already driven by tts_engine.py's real per-word timing
+    # sidecar. Scene cuts and rule-number stickers previously were NOT —
+    # they used an artificial even split across scenes, which silently
+    # drifts out of sync with what's actually being said the moment any one
+    # sentence runs longer or shorter than the "average" (e.g. the sticker
+    # for rule 3 popping up while the caption is still finishing rule 2's
+    # sentence). Deriving scene boundaries from the SAME real word-timing
+    # data captions already use is what actually keeps visuals and audio
+    # in sync, instead of two independent timing estimates that can drift
+    # apart from each other.
+    words = narration_text.split()
+    timings = _load_word_timings(audio_path)
+    if timings and len(timings) >= len(words) * 0.6:
+        word_times_for_scenes = [(t.get("text", "").strip() or "", t["start"], t["end"]) for t in timings]
+    else:
+        per_word = narration_clip.duration / max(len(words), 1)
+        word_times_for_scenes = [(w, i * per_word, (i + 1) * per_word) for i, w in enumerate(words)]
+
+    sentence_times = _compute_sentence_start_times(word_times_for_scenes)
+
     n = len(assets)
-    if n > 1:
+    if len(sentence_times) == n and n > 1:
+        # Exact match (the common case: hook + 4 rules + cta = 6 sentences
+        # = 6 scenes) — use the REAL timing, sentence by sentence.
+        scene_durations = [max(0.3, end - start) for (_, start, end) in sentence_times]
+        print(f"[+] Scene cuts synced to real sentence timing ({n} sentences matched {n} scenes).")
+    elif n > 1:
+        # Sentence count didn't match scene count (Gemini wrote a script
+        # with a different structure than expected) — real per-sentence
+        # timing can't be mapped 1:1 to scenes, so fall back to the old
+        # even-split-with-shorter-hook estimate rather than guessing wrong.
+        print(f"[i] Sentence count ({len(sentence_times)}) didn't match scene count ({n}) — "
+              f"using an even split instead of real sentence timing for scene cuts.")
         even_split = narration_clip.duration / n
         hook_duration = even_split * _HOOK_DURATION_RATIO
         rest_duration = (narration_clip.duration - hook_duration) / (n - 1)
