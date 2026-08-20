@@ -61,18 +61,18 @@ jobs:
   channel-manager:
     runs-on: ubuntu-latest
     needs: build-and-publish
-    if: always()   # build-and-publish fail করলেও চলবে, যাতে activity-alert কাজ করে
+    if: always()
 
     steps:
     - name: Check out repository
-      uses: actions/checkout@v4        # ছিল v3
+      uses: actions/checkout@v3
 
     - name: Set up Python
-      uses: actions/setup-python@v5    # ছিল v4
+      uses: actions/setup-python@v4
       with:
         python-version: '3.10'
 
-    - name: Install System Dependencies (Fonts)
+    - name: Install System Dependencies (fonts for thumbnail generation)
       run: |
         sudo apt-get update
         sudo apt-get install -y fonts-dejavu-core
@@ -80,13 +80,12 @@ jobs:
     - name: Install Python Packages
       run: pip install -r requirements.txt
 
-    - name: Run AI Channel Manager (LIVE — applies changes)
+    - name: Run AI Channel Manager (Gemini proposes + Claude reviews)
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
         YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
         YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-        # LIVE মোডে চলছে — title/description/tags/thumbnail সত্যিই বদলে দেবে।
-        # সমস্যা মনে হলে "false" করে আবার dry-run-এ ফিরিয়ে নিতে পারেন।
-        CHANNEL_MANAGER_APPLY_CHANGES: "true"
+        CHANNEL_MANAGER_APPLY_CHANGES: "false"
       run: python channel_manager.py
