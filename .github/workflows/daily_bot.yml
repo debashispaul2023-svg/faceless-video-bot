@@ -2,20 +2,15 @@ name: Daily Automatic Video Generator & Publisher
 
 on:
   schedule:
-    # দিনে মাত্র ১ বার চলে — এই একটা run-ই ৩টা ভিডিও বানিয়ে
-    # publishAt দিয়ে ৩টা fixed IST slot-এ (3:00 AM / 5:00 PM / 10:30 PM)
-    # schedule করে দেয় — find_next_available_slots() আগে থেকে YouTube
-    # চেক করে ঠিক কোন দিনে বসবে সেটা ঠিক করে (আজ ফুল থাকলে পরের দিন)।
-    # 08:00 UTC (~1:30 PM IST)-এ চালানো হচ্ছে যাতে generate+render+upload
-    # করার জন্য যথেষ্ট সময় থাকে।
+    # দিনে ১ বার চলে — ৩টি ভিডিও শিডিউল করে (7:30 AM / 1:00 PM / 5:30 PM EDT)
     - cron: '0 8 * * *'
-  workflow_dispatch: # ম্যানুয়ালি টেস্ট করার জন্য
+  workflow_dispatch: # ম্যানুয়ালি ট্রিগার করার জন্য
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # গিটহাবে হিস্ট্রি ফাইল কমিট করার জন্য পারমিশন
+      contents: write
 
     steps:
     - name: Check out repository
@@ -39,29 +34,31 @@ jobs:
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-        ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
+        ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
         YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
         YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
         YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
       run: |
         python main.py
 
-    - name: Commit updated bot state (topics history, analytics log)
+    - name: Commit updated generator states and logs
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
-        for f in assets/used_topics.json assets/published_log.json assets/category_scores.json; do
+        for f in assets/used_topics.json assets/published_log.json assets/category_scores.json assets/top_performing_patterns.json; do
           if [ -f "$f" ]; then
             git add "$f"
           fi
         done
-        git commit -m "chore: update bot state [skip ci]" || exit 0
+        git commit -m "chore: update generator state and analytics [skip ci]" || exit 0
         git push
 
   channel-manager:
-    runs-on: ubuntu-latest
     needs: build-and-publish
-    if: always()
+    if: always() # build fail করলেও চ্যানেল ম্যানেজমেন্ট এবং অডিট চলবে
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
     - name: Check out repository
@@ -72,20 +69,28 @@ jobs:
       with:
         python-version: '3.10'
 
-    - name: Install System Dependencies (fonts for thumbnail generation)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y fonts-dejavu-core
-
     - name: Install Python Packages
-      run: pip install -r requirements.txt
+      run: |
+        pip install -r requirements.txt
 
-    - name: Run AI Channel Manager (Gemini proposes + Claude reviews)
+    - name: Run Channel Manager
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
         YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
         YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-        CHANNEL_MANAGER_APPLY_CHANGES: "false"
-      run: python channel_manager.py
+      run: |
+        python channel_manager.py
+
+    - name: Commit channel manager state
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        for f in assets/channel_manager_actions.json assets/retention_insights.json; do
+          if [ -f "$f" ]; then
+            git add "$f"
+          fi
+        done
+        git commit -m "chore: update channel manager state [skip ci]" || exit 0
+        git push
