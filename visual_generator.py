@@ -23,8 +23,31 @@ PEXELS_PHOTO_SEARCH_URL = "https://api.pexels.com/v1/search"
 _MIN_SOURCE_WIDTH = 720
 
 # How many of the top search results to actually consider per scene before
-# giving up on stock footage and falling back to AI generation.
-_MAX_CANDIDATES_PER_SEARCH = 3
+# giving up on stock footage and falling back to AI generation. Kept at 1:
+# each relevance check costs a Gemini call, and this project's free-tier
+# quota for gemini-3.5-flash is only 20 requests/DAY total — that quota is
+# shared with script generation (researcher.py) and the top-performer
+# analysis (analytics_feedback.py), so checking 3 candidates per scene x 6
+# scenes could burn the ENTIRE day's quota on relevance-checking ALONE
+# before the 2nd/3rd video of the day even starts generating its script.
+_MAX_CANDIDATES_PER_SEARCH = 1
+
+# Circuit breaker: once we see ONE quota-exhausted (429) response from a
+# relevance check, the daily quota is gone for the rest of this run — there
+# is no point spending network time hitting the same wall on every
+# subsequent scene. This flag disables further relevance-check attempts for
+# the rest of the process (fails open, same as any other relevance-check
+# failure) so whatever quota remains is left for script generation instead,
+# which matters far more than a stock-footage sanity check.
+_relevance_check_quota_exhausted = False
+
+# Hard cap, independent of hitting an actual 429: even successful relevance
+# checks cost real quota out of a 20-requests/day free-tier budget shared
+# with script generation and analytics. Capping total checks per run (all 3
+# videos combined, since main.py runs them in one process) guarantees
+# several requests are always left over for the higher-priority work.
+_MAX_RELEVANCE_CHECKS_PER_RUN = 6
+_relevance_check_call_count = 0
 
 
 def _is_visually_relevant(image_bytes: bytes, scene_description: str) -> bool:
@@ -44,16 +67,27 @@ def _is_visually_relevant(image_bytes: bytes, scene_description: str) -> bool:
     actual content. The image now has to depict the SPECIFIC subject
     described, not just a vague/coincidental category match.
 
-    Fails OPEN on any error (no API key, quota hit, network issue, etc.) —
-    i.e. if we can't verify, we trust the stock result rather than blocking
-    the whole pipeline on a relevance-check outage. This check is a quality
-    filter, never a hard requirement.
+    Budget-aware: stops making Gemini calls entirely once either
+    _MAX_RELEVANCE_CHECKS_PER_RUN is hit OR a 429 quota-exhausted response is
+    seen — both fail OPEN (trust the stock result) rather than block the
+    pipeline, and both exist so this quality check can never starve script
+    generation of the same shared daily Gemini quota. This check is a
+    quality filter, never a hard requirement.
     """
+    global _relevance_check_quota_exhausted, _relevance_check_call_count
+
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key or not image_bytes:
         return True
 
+    if _relevance_check_quota_exhausted:
+        return True  # already confirmed quota's gone this run — don't even try
+
+    if _relevance_check_call_count >= _MAX_RELEVANCE_CHECKS_PER_RUN:
+        return True  # stay well under budget so script generation always has room
+
     try:
+        _relevance_check_call_count += 1
         client = genai.Client(api_key=api_key)
         prompt = (
             "You are strictly quality-checking stock footage for a short "
@@ -84,7 +118,13 @@ def _is_visually_relevant(image_bytes: bytes, scene_description: str) -> bool:
         answer = (response.text or "").strip().upper()
         return answer.startswith("Y")
     except Exception as e:
-        print(f"[i] Relevance check skipped (non-fatal, trusting stock result): {e}")
+        error_str = str(e)
+        if "RESOURCE_EXHAUSTED" in error_str or "429" in error_str or "quota" in error_str.lower():
+            _relevance_check_quota_exhausted = True
+            print(f"[i] Gemini quota exhausted — disabling relevance-checking for the rest of "
+                  f"this run (remaining quota is reserved for script generation, which matters more).")
+        else:
+            print(f"[i] Relevance check skipped (non-fatal, trusting stock result): {e}")
         return True
 
 
