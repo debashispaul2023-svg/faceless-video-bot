@@ -141,6 +141,16 @@ _SHOW_HOOK_BUBBLE = True
 _HOOK_BUBBLE_FONT_SIZE = 48
 _HOOK_BUBBLE_Y_RATIO = 0.30  # sits well above the main caption band
 
+# A fake comment-box mockup with a short typing animation, shown during the
+# LAST scene (the CTA) — replaces whatever the CTA stock footage happens to
+# be showing (often a person holding a phone with a blank/unreadable
+# screen) with an explicit visual of what "comment below" actually means,
+# instead of leaving viewers without a clear visual cue for the ask.
+_SHOW_CTA_MOCKUP = True
+_CTA_MOCKUP_WIDTH_RATIO = 0.80
+_CTA_MOCKUP_Y_RATIO = 0.38
+_CTA_MOCKUP_TYPE_SECONDS = 1.2  # how long the typing animation takes to finish
+
 
 def _resolve_font_path() -> str:
     for candidate in _FONT_CANDIDATES:
@@ -288,6 +298,13 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
         if not chunk:
             continue
 
+        # The hook bubble (below) already displays chunk 0's text on its
+        # own, higher up the screen — rendering the normal white/yellow
+        # caption band for that SAME text at the SAME time produced the
+        # duplicate "same line twice" look. Chunk 0 shows ONLY the bubble;
+        # every other chunk uses the normal karaoke caption band as before.
+        suppress_main_band = (chunk_index == 0 and _SHOW_HOOK_BUBBLE)
+
         # Per-word metrics, since emphasis words use a bigger font than
         # normal words within the SAME on-screen chunk.
         word_meta = []  # (word, start, end, font_obj, font_size, emphasis_color_or_None, width)
@@ -297,72 +314,73 @@ def _build_captions(narration_text: str, total_duration: float, audio_path: Path
             width = f_obj.getlength(word_upper) if word_upper else 0
             word_meta.append((word_upper, w_start, w_end, f_obj, f_size, emphasis_color, width))
 
-        total_w = sum(w[6] for w in word_meta) + space_w * max(0, len(word_meta) - 1)
-        # Defensive clamp: even with the width-aware chunking above, a
-        # single word longer than the safe width alone (rare, but possible)
-        # would still center to a negative x. Clamping keeps it fully
-        # on-screen (small edge overlap allowed) instead of running off
-        # the left edge.
-        start_x = max((config.VIDEO_WIDTH - total_w) / 2, _CAPTION_SIDE_MARGIN)
+        if not suppress_main_band:
+            total_w = sum(w[6] for w in word_meta) + space_w * max(0, len(word_meta) - 1)
+            # Defensive clamp: even with the width-aware chunking above, a
+            # single word longer than the safe width alone (rare, but possible)
+            # would still center to a negative x. Clamping keeps it fully
+            # on-screen (small edge overlap allowed) instead of running off
+            # the left edge.
+            start_x = max((config.VIDEO_WIDTH - total_w) / 2, _CAPTION_SIDE_MARGIN)
 
-        cursor_x = start_x
-        for word_upper, w_start, w_end, f_obj, f_size, emphasis_color, width in word_meta:
-            if not word_upper:
+            cursor_x = start_x
+            for word_upper, w_start, w_end, f_obj, f_size, emphasis_color, width in word_meta:
+                if not word_upper:
+                    cursor_x += width + space_w
+                    continue
+
+                word_duration = max(0.05, w_end - w_start)
+                # Emphasis words stay visible (in the accent color) for the
+                # WHOLE chunk's on-screen time, not just their own instant —
+                # matches the reference video's consistently-bold "Think" style
+                # rather than a brief flash.
+                chunk_duration = max(0.05, chunk[-1][2] - chunk[0][1])
+
+                if emphasis_color:
+                    word_clip = (
+                        TextClip(
+                            font=font_path, text=word_upper, font_size=f_size,
+                            color=emphasis_color, stroke_color='black', stroke_width=5,
+                            method='label'
+                        )
+                        .with_position((cursor_x, y_pos - (f_size - _CAPTION_FONT_SIZE) // 2))
+                        .with_start(chunk[0][1])
+                        .with_duration(chunk_duration)
+                    )
+                    clips.append(word_clip)
+                else:
+                    # Normal word: white base for the whole chunk, then a
+                    # yellow highlight layered on top only during its own
+                    # timing slice — the existing karaoke behavior.
+                    base_clip = (
+                        TextClip(
+                            font=font_path, text=word_upper, font_size=f_size,
+                            color='white', stroke_color='black', stroke_width=4,
+                            method='label'
+                        )
+                        .with_position((cursor_x, y_pos))
+                        .with_start(chunk[0][1])
+                        .with_duration(chunk_duration)
+                    )
+                    clips.append(base_clip)
+
+                    highlight_clip = (
+                        TextClip(
+                            font=font_path, text=word_upper, font_size=f_size,
+                            color=_CAPTION_NORMAL_HIGHLIGHT_COLOR, stroke_color='black', stroke_width=4,
+                            method='label'
+                        )
+                        .with_position((cursor_x, y_pos))
+                        .with_start(w_start)
+                        .with_duration(word_duration)
+                    )
+                    clips.append(highlight_clip)
+
                 cursor_x += width + space_w
-                continue
 
-            word_duration = max(0.05, w_end - w_start)
-            # Emphasis words stay visible (in the accent color) for the
-            # WHOLE chunk's on-screen time, not just their own instant —
-            # matches the reference video's consistently-bold "Think" style
-            # rather than a brief flash.
-            chunk_duration = max(0.05, chunk[-1][2] - chunk[0][1])
-
-            if emphasis_color:
-                word_clip = (
-                    TextClip(
-                        font=font_path, text=word_upper, font_size=f_size,
-                        color=emphasis_color, stroke_color='black', stroke_width=5,
-                        method='label'
-                    )
-                    .with_position((cursor_x, y_pos - (f_size - _CAPTION_FONT_SIZE) // 2))
-                    .with_start(chunk[0][1])
-                    .with_duration(chunk_duration)
-                )
-                clips.append(word_clip)
-            else:
-                # Normal word: white base for the whole chunk, then a
-                # yellow highlight layered on top only during its own
-                # timing slice — the existing karaoke behavior.
-                base_clip = (
-                    TextClip(
-                        font=font_path, text=word_upper, font_size=f_size,
-                        color='white', stroke_color='black', stroke_width=4,
-                        method='label'
-                    )
-                    .with_position((cursor_x, y_pos))
-                    .with_start(chunk[0][1])
-                    .with_duration(chunk_duration)
-                )
-                clips.append(base_clip)
-
-                highlight_clip = (
-                    TextClip(
-                        font=font_path, text=word_upper, font_size=f_size,
-                        color=_CAPTION_NORMAL_HIGHLIGHT_COLOR, stroke_color='black', stroke_width=4,
-                        method='label'
-                    )
-                    .with_position((cursor_x, y_pos))
-                    .with_start(w_start)
-                    .with_duration(word_duration)
-                )
-                clips.append(highlight_clip)
-
-            cursor_x += width + space_w
-
-        # Hook bubble: a rounded speech-bubble graphic behind ONLY the very
-        # first caption chunk, sitting above the main caption band — see
-        # _hook_bubble_clip() below. Best-effort; skipped silently on error.
+        # Hook bubble: a rounded speech-bubble graphic showing ONLY the very
+        # first caption chunk's text, sitting above the main caption band —
+        # see _hook_bubble_clip() below. Best-effort; skipped silently on error.
         if chunk_index == 0 and _SHOW_HOOK_BUBBLE:
             try:
                 bubble_text = " ".join(w[0] for w in word_meta if w[0])
@@ -406,6 +424,70 @@ def _hook_bubble_clip(text: str, start_time: float, duration: float):
 
     x_pos = (config.VIDEO_WIDTH - box_w) / 2
     y_pos = int(config.VIDEO_HEIGHT * _HOOK_BUBBLE_Y_RATIO)
+    return rgb_clip.with_position((x_pos, y_pos)).with_start(start_time)
+
+
+def _cta_mockup_frame(progress: float, full_text: str, width: int, height: int) -> np.ndarray:
+    """
+    Draws one frame of a fake comment-input box: an avatar circle, a
+    progressively-typed line of text with a blinking cursor, and a send
+    arrow once typing finishes — entirely code-drawn with PIL, no
+    dependency on where an actual phone screen sits in the background
+    footage. `progress` is 0-1 across the typing animation.
+    """
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([0, 0, width - 1, height - 1], radius=height // 2,
+                            fill=(255, 255, 255, 248), outline=(210, 210, 210, 255), width=2)
+
+    avatar_d = height - 24
+    draw.ellipse([18, 12, 18 + avatar_d, 12 + avatar_d], fill=(80, 80, 80, 255))
+
+    font = ImageFont.truetype(_resolve_font_path(), int(height * 0.32))
+    chars_to_show = max(0, int(len(full_text) * min(progress, 1.0)))
+    shown_text = full_text[:chars_to_show]
+    text_x = 18 + avatar_d + 22
+    text_y = height / 2
+    bbox = draw.textbbox((0, 0), shown_text or " ", font=font)
+    draw.text((text_x, text_y - (bbox[3] - bbox[1]) / 2 - bbox[1]), shown_text, font=font, fill=(25, 25, 25, 255))
+
+    if progress < 1.0 and int(progress * 12) % 2 == 0:
+        cursor_x = text_x + draw.textlength(shown_text, font=font) + 4
+        draw.rectangle([cursor_x, text_y - height * 0.22, cursor_x + 3, text_y + height * 0.22], fill=(25, 25, 25, 255))
+
+    if progress >= 1.0:
+        cx, cy, r = width - 55, height // 2, 16
+        draw.polygon([(cx - r, cy - r), (cx - r, cy + r), (cx + r, cy)], fill=(230, 30, 30, 255))
+
+    return np.array(img)
+
+
+def _cta_mockup_clip(start_time: float, duration: float, cta_text: str = "RULE 4"):
+    """
+    Positioned, animated version of the CTA comment-box mockup, shown for
+    the full duration of the CTA scene — see _cta_mockup_frame() above.
+    Best-effort; the caller wraps this in try/except.
+    """
+    width = int(config.VIDEO_WIDTH * _CTA_MOCKUP_WIDTH_RATIO)
+    height = 120
+    type_seconds = min(_CTA_MOCKUP_TYPE_SECONDS, max(duration - 0.3, 0.3))
+
+    def make_frame(t):
+        progress = t / type_seconds if type_seconds > 0 else 1.0
+        frame = _cta_mockup_frame(progress, cta_text, width, height)
+        return frame[:, :, :3]
+
+    def make_mask_frame(t):
+        progress = t / type_seconds if type_seconds > 0 else 1.0
+        frame = _cta_mockup_frame(progress, cta_text, width, height)
+        return frame[:, :, 3].astype("float32") / 255.0
+
+    rgb_clip = VideoClip(frame_function=make_frame, duration=duration)
+    mask_clip = VideoClip(frame_function=make_mask_frame, is_mask=True, duration=duration)
+    rgb_clip = rgb_clip.with_mask(mask_clip)
+
+    x_pos = (config.VIDEO_WIDTH - width) / 2
+    y_pos = int(config.VIDEO_HEIGHT * _CTA_MOCKUP_Y_RATIO)
     return rgb_clip.with_position((x_pos, y_pos)).with_start(start_time)
 
 
@@ -787,6 +869,54 @@ def _apply_crossfades(clips: list, crossfade_duration: float):
     return concatenate_videoclips(faded, method="compose", padding=-crossfade_duration)
 
 
+def _derive_scene_boundaries(sentence_times: list, narration_duration: float, n: int) -> list:
+    """
+    Returns exactly n (start, end) scene-timing tuples.
+
+    If the script's sentence count exactly matches the scene count, uses
+    the real per-sentence timing directly (the ideal case). Otherwise —
+    common in practice, e.g. Gemini writes a rule as two short sentences,
+    so a 6-scene script can easily produce 8-9 sentences — this used to
+    throw away ALL the real timing data and fall back to a pure even
+    split. Instead, it now starts from that same even-split-with-shorter-
+    hook estimate, then SNAPS each internal cut point to the nearest real
+    sentence boundary (so cuts still land on a natural pause instead of an
+    arbitrary mid-sentence instant), while guaranteeing the result stays
+    valid — strictly increasing, no zero-length segments — even where
+    snapping doesn't cleanly apply to a particular cut.
+    """
+    even_split = narration_duration / n
+    hook_duration = even_split * _HOOK_DURATION_RATIO
+    rest_duration = (narration_duration - hook_duration) / (n - 1) if n > 1 else narration_duration
+
+    raw_cuts = [0.0]
+    cursor = hook_duration
+    for _ in range(n - 1):
+        raw_cuts.append(cursor)
+        cursor += rest_duration
+    raw_cuts.append(narration_duration)
+
+    if not sentence_times:
+        return [(raw_cuts[i], raw_cuts[i + 1]) for i in range(n)]
+
+    boundary_times = sorted(set([s for (_, s, _) in sentence_times] + [sentence_times[-1][2]]))
+    tolerance = even_split * 0.4  # only snap if the nearest real boundary is reasonably close
+
+    snapped = [0.0]
+    for i in range(1, n):
+        target = raw_cuts[i]
+        nearest = min(boundary_times, key=lambda b: abs(b - target))
+        candidate = nearest if abs(nearest - target) <= tolerance else target
+        if candidate <= snapped[-1]:
+            candidate = target  # snapping would go backwards — use the even-split target instead
+        if candidate <= snapped[-1]:
+            candidate = snapped[-1] + 0.3  # last-resort minimum segment length, guarantees progress
+        snapped.append(candidate)
+    snapped.append(narration_duration)
+
+    return [(snapped[i], snapped[i + 1]) for i in range(n)]
+
+
 def render_final_video(image_paths: list, audio_path: Path, narration_text: str, output_filename: str) -> Path:
     """
     Renders the final video: real stock video clips play as-is, still images
@@ -850,22 +980,16 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     sentence_times = _compute_sentence_start_times(word_times_for_scenes)
 
     n = len(assets)
-    if len(sentence_times) == n and n > 1:
-        # Exact match (the common case: hook + 4 rules + cta = 6 sentences
-        # = 6 scenes) — use the REAL timing, sentence by sentence.
-        scene_durations = [max(0.3, end - start) for (_, start, end) in sentence_times]
-        print(f"[+] Scene cuts synced to real sentence timing ({n} sentences matched {n} scenes).")
-    elif n > 1:
-        # Sentence count didn't match scene count (Gemini wrote a script
-        # with a different structure than expected) — real per-sentence
-        # timing can't be mapped 1:1 to scenes, so fall back to the old
-        # even-split-with-shorter-hook estimate rather than guessing wrong.
-        print(f"[i] Sentence count ({len(sentence_times)}) didn't match scene count ({n}) — "
-              f"using an even split instead of real sentence timing for scene cuts.")
-        even_split = narration_clip.duration / n
-        hook_duration = even_split * _HOOK_DURATION_RATIO
-        rest_duration = (narration_clip.duration - hook_duration) / (n - 1)
-        scene_durations = [hook_duration] + [rest_duration] * (n - 1)
+    if n > 1:
+        if len(sentence_times) == n:
+            scene_durations = [max(0.3, end - start) for (_, start, end) in sentence_times]
+            print(f"[+] Scene cuts synced to real sentence timing ({n} sentences matched {n} scenes).")
+        else:
+            print(f"[i] Sentence count ({len(sentence_times)}) didn't exactly match scene count "
+                  f"({n}) — snapping scene cuts to the nearest real sentence boundaries instead "
+                  f"of a pure even split.")
+            boundaries = _derive_scene_boundaries(sentence_times, narration_clip.duration, n)
+            scene_durations = [max(0.3, end - start) for (start, end) in boundaries]
     else:
         scene_durations = [narration_clip.duration]
 
@@ -998,6 +1122,21 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
             traceback.print_exc()
             sticker_clips = []
 
+    # CTA mockup — a fake comment-box with a typing animation, shown for
+    # the last scene (the call-to-action). Replaces relying on whatever the
+    # CTA stock footage happens to show (often a blank/unreadable phone
+    # screen) with an explicit visual of what "comment below" means.
+    cta_mockup_clips = []
+    if _SHOW_CTA_MOCKUP and len(assets) >= 2 and scene_start_times:
+        try:
+            cta_idx = len(assets) - 1
+            cta_mockup_clips.append(
+                _cta_mockup_clip(scene_start_times[cta_idx], scene_durations[cta_idx])
+            )
+        except Exception as e:
+            print(f"[!] CTA mockup overlay failed, continuing WITHOUT it: {e}")
+            traceback.print_exc()
+
     # Percentage/stat ring — pops up once, at roughly the moment the script
     # first mentions a "NN%" figure (common in this niche: utilization,
     # savings rate, etc.) — see _detect_percentage_moment() above.
@@ -1015,7 +1154,7 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
             print(f"[!] Percentage ring overlay failed, continuing without it: {e}")
             traceback.print_exc()
 
-    overlay_clips = captions + progress_bar_clips + sticker_clips + percentage_ring_clips
+    overlay_clips = captions + progress_bar_clips + sticker_clips + percentage_ring_clips + cta_mockup_clips
     final_clip = CompositeVideoClip([video_with_audio] + overlay_clips) if overlay_clips else video_with_audio
 
     output_path = config.OUTPUT_DIR / output_filename
