@@ -48,6 +48,7 @@ def process_single_short(index: int, day_offset: int, target_hour: int, target_m
                 category=script_data.get("category", "unknown"),
                 title=script_data.get("title", ""),
                 hook_technique=script_data.get("hook_technique", "unspecified"),
+                prompt_version=script_data.get("prompt_version", "unknown"),
             )
         except Exception as e:
             print(f"[i] Could not log video for analytics feedback (non-fatal): {e}")

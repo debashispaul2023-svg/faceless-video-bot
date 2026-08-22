@@ -8,6 +8,15 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
+# Bump this any time the live prompt (the actual instructions sent to
+# Gemini in generate_script(), not the fallback pool) changes meaningfully.
+# It gets tagged onto every video published from that prompt, so
+# analytics_feedback.py can later show whether "v2" actually outperformed
+# "v1" with real view/retention data — instead of just trusting that a
+# prompt edit was an improvement. Never overwrite performance history: bump
+# the number, don't reuse an old one.
+_PROMPT_VERSION = "v1"
+
 # Where we remember which titles we've already used, so we stop repeating
 # ourselves both within a single run (3 shorts) and across days.
 _HISTORY_FILE = Path(__file__).resolve().parent / "assets" / "used_topics.json"
@@ -489,6 +498,7 @@ def generate_script(topic_type="facts"):
 
         result = json.loads(raw_text)
         result["category"] = category
+        result["prompt_version"] = _PROMPT_VERSION
         result.setdefault("hook_technique", "unspecified")  # in case Gemini forgets it — never let this block the pipeline
         if result.get("script"):
             result["script"] = _enforce_max_duration(result["script"])
@@ -509,5 +519,6 @@ def get_fallback_script():
     unused = [s for s in _FALLBACK_SCRIPTS if s["title"] not in used_titles]
     choice = dict(random.choice(unused or _FALLBACK_SCRIPTS))  # copy — don't mutate the shared pool
     choice["script"] = _enforce_max_duration(choice["script"])
+    choice["prompt_version"] = "fallback"  # not driven by the live prompt — kept separate so it never skews a prompt version's real performance comparison
     _remember_title(choice["title"])
     return choice

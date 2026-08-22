@@ -58,12 +58,33 @@ def _authenticate():
     return creds
 
 
-def log_published_video(video_id: str, category: str, title: str, hook_technique: str = None):
+def _write_version_scores(averaged_versions: dict, version_counts: dict):
+    """
+    Merges prompt-version performance into the SAME top_performing_patterns.json
+    file get_top_performing_patterns() already writes (as a "version_scores"
+    key alongside its existing "patterns" key) — deliberately not a separate
+    file, just one more section of the one analytics-summary file this
+    project already has.
+    """
+    try:
+        existing = {}
+        if _TOP_PATTERNS_FILE.is_file():
+            existing = json.loads(_TOP_PATTERNS_FILE.read_text())
+        existing["version_scores"] = averaged_versions
+        existing["version_sample_sizes"] = version_counts
+        existing["version_scores_updated_at"] = datetime.now(timezone.utc).isoformat()
+        _TOP_PATTERNS_FILE.write_text(json.dumps(existing, indent=2))
+    except Exception as e:
+        print(f"[!] Could not write version scores: {e}")
+
+
+def log_published_video(video_id: str, category: str, title: str, hook_technique: str = None, prompt_version: str = None):
     """
     Call this right after a successful upload so we have a record of which
-    topic category AND which hook technique each video came from — needed
-    later to correlate performance back to both, and to reconstruct each
-    video's "structural DNA" for the top-performer analysis below.
+    topic category, hook technique, AND prompt version each video came
+    from — needed later to correlate performance back to all three, and to
+    reconstruct each video's "structural DNA" for the top-performer
+    analysis below.
     """
     if not video_id:
         return
@@ -75,6 +96,7 @@ def log_published_video(video_id: str, category: str, title: str, hook_technique
             "video_id": video_id,
             "category": category or "unknown",
             "hook_technique": hook_technique or "unspecified",
+            "prompt_version": prompt_version or "unknown",
             "title": title,
             "published_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -121,6 +143,7 @@ def update_category_weights():
             analytics = build("youtubeAnalytics", "v2", credentials=creds)
 
             category_scores, category_counts = {}, {}
+            version_scores, version_counts = {}, {}
 
             for entry in candidates:
                 try:
@@ -142,6 +165,14 @@ def update_category_weights():
                     category = entry.get("category", "unknown")
                     category_scores[category] = category_scores.get(category, 0) + score
                     category_counts[category] = category_counts.get(category, 0) + 1
+
+                    # Same score, grouped by prompt_version instead — lets you
+                    # see "is the current researcher.py prompt actually doing
+                    # better than the last one?" with real data, from the
+                    # exact same API calls (no extra quota spent).
+                    version = entry.get("prompt_version", "unknown")
+                    version_scores[version] = version_scores.get(version, 0) + score
+                    version_counts[version] = version_counts.get(version, 0) + 1
                 except Exception:
                     continue  # one bad lookup shouldn't sink the whole update
 
@@ -151,6 +182,12 @@ def update_category_weights():
                 print(f"[+] Updated category performance scores: {averaged_categories}")
             else:
                 print("[i] Analytics feedback: API reachable but no usable rows returned yet for categories.")
+
+            if version_scores:
+                averaged_versions = {v: round(version_scores[v] / version_counts[v], 2) for v in version_scores}
+                _write_version_scores(averaged_versions, version_counts)
+                print(f"[+] Prompt version performance so far: {averaged_versions} "
+                      f"(sample sizes: {version_counts})")
 
     except KeyError as e:
         print(f"[i] Analytics feedback skipped — missing env var {e}. "
@@ -278,10 +315,19 @@ def get_top_performing_patterns(limit: int = 3) -> list:
         scored.sort(key=lambda x: x["score"], reverse=True)
         top = scored[:limit]
 
-        _TOP_PATTERNS_FILE.write_text(json.dumps({
-            "patterns": top,
-            "updated_at": now.isoformat(),
-        }, indent=2))
+        # Merge into the existing file rather than overwrite it — this same
+        # file also carries "version_scores" (written by
+        # update_category_weights() via _write_version_scores()), and each
+        # writer should only touch its own key.
+        existing = {}
+        if _TOP_PATTERNS_FILE.is_file():
+            try:
+                existing = json.loads(_TOP_PATTERNS_FILE.read_text())
+            except Exception:
+                existing = {}
+        existing["patterns"] = top
+        existing["updated_at"] = now.isoformat()
+        _TOP_PATTERNS_FILE.write_text(json.dumps(existing, indent=2))
         print(f"[+] Identified {len(top)} top-performing pattern(s): "
               f"{[p['title'] for p in top]}")
         return top
