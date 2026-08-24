@@ -17,7 +17,7 @@
       "category": "debt management and credit scores",
       "hook_technique": "unspecified",
       "structure_note": "hook style: unspecified; topic angle: debt management and credit scores",
-      "score": 169.59,
+      "score": 169.58,
       "views": 77,
       "average_view_percentage": 84.71,
       "engagement_rate": 0.0
@@ -34,12 +34,14 @@
       "engagement_rate": 0.0
     }
   ],
-  "updated_at": "2026-08-23T08:22:37.396946+00:00",
+  "updated_at": "2026-08-24T08:41:09.977963+00:00",
   "version_scores": {
-    "unknown": 0.0
+    "unknown": 0.0,
+    "v1": 0.0
   },
   "version_sample_sizes": {
-    "unknown": 21
+    "unknown": 18,
+    "v1": 3
   },
-  "version_scores_updated_at": "2026-08-23T08:22:37.396567+00:00"
+  "version_scores_updated_at": "2026-08-24T08:41:09.977609+00:00"
 }
