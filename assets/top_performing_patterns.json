@@ -34,14 +34,14 @@
       "engagement_rate": 0.0
     }
   ],
-  "updated_at": "2026-08-25T08:35:22.753834+00:00",
+  "updated_at": "2026-08-26T08:36:28.862044+00:00",
   "version_scores": {
-    "unknown": 7.31,
+    "unknown": 16.76,
     "v1": 0.0
   },
   "version_sample_sizes": {
-    "unknown": 15,
-    "v1": 6
+    "unknown": 12,
+    "v1": 9
   },
-  "version_scores_updated_at": "2026-08-25T08:35:22.753395+00:00"
+  "version_scores_updated_at": "2026-08-26T08:36:28.861703+00:00"
 }
