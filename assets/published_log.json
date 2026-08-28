@@ -547,5 +547,29 @@
     "prompt_version": "v1",
     "title": "The Debt-Free Credit Penalty",
     "published_at": "2026-08-26T09:04:20.240974+00:00"
+  },
+  {
+    "video_id": "STHBNSeWyLs",
+    "category": "budgeting and saving money",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The Split-Account Savings Trap",
+    "published_at": "2026-08-28T20:00:18.742293+00:00"
+  },
+  {
+    "video_id": "1nB1ctlJkYM",
+    "category": "budgeting and saving money",
+    "hook_technique": "everyday_comparison",
+    "prompt_version": "v1",
+    "title": "The Vice-Match Money Hack",
+    "published_at": "2026-08-28T20:09:38.547657+00:00"
+  },
+  {
+    "video_id": "APUJZFPvo1A",
+    "category": "budgeting and saving money",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The checking account safety buffer trap",
+    "published_at": "2026-08-28T20:18:26.056513+00:00"
   }
 ]

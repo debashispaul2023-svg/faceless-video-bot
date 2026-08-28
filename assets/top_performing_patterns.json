@@ -1,6 +1,17 @@
 {
   "patterns": [
     {
+      "video_id": "AnGu3JdJyaY",
+      "title": "The Cheap Side Hustle Trap Exposed",
+      "category": "side hustles and making money online",
+      "hook_technique": "counter_intuitive_fact",
+      "structure_note": "hook style: counter_intuitive_fact; topic angle: side hustles and making money online",
+      "score": 197.95,
+      "views": 6,
+      "average_view_percentage": 82.29,
+      "engagement_rate": 0.3333
+    },
+    {
       "video_id": "8bM_tq6DjrI",
       "title": "The 6% Credit Illusion",
       "category": "debt management and credit scores",
@@ -17,31 +28,20 @@
       "category": "debt management and credit scores",
       "hook_technique": "unspecified",
       "structure_note": "hook style: unspecified; topic angle: debt management and credit scores",
-      "score": 169.57,
+      "score": 169.55,
       "views": 77,
       "average_view_percentage": 84.71,
       "engagement_rate": 0.0
-    },
-    {
-      "video_id": "vyyiPzXEKO0",
-      "title": "The Two-Date Credit Hack",
-      "category": "debt management and credit scores",
-      "hook_technique": "unspecified",
-      "structure_note": "hook style: unspecified; topic angle: debt management and credit scores",
-      "score": 166.99,
-      "views": 3,
-      "average_view_percentage": 83.49,
-      "engagement_rate": 0.0
     }
   ],
-  "updated_at": "2026-08-26T08:36:28.862044+00:00",
+  "updated_at": "2026-08-28T19:50:32.747928+00:00",
   "version_scores": {
-    "unknown": 16.76,
+    "unknown": 14.95,
     "v1": 0.0
   },
   "version_sample_sizes": {
-    "unknown": 12,
-    "v1": 9
+    "unknown": 3,
+    "v1": 12
   },
-  "version_scores_updated_at": "2026-08-26T08:36:28.861703+00:00"
+  "version_scores_updated_at": "2026-08-28T19:50:32.747552+00:00"
 }
