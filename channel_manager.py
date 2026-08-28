@@ -478,12 +478,26 @@ def run_channel_manager():
 
         print("[+] Asking Claude to independently review the proposal...")
         reviews = _claude_review_actions(snapshot, proposed)
+
+        single_model_mode = False
         if len(reviews) != len(proposed):
-            print(f"[!] Claude's review count ({len(reviews)}) didn't match the proposal "
-                  f"count ({len(proposed)}) — treating this as inconclusive and taking NO "
-                  f"actions this run (safer than guessing which review matches which action).")
-            print("=" * 60)
-            return
+            if os.getenv("ANTHROPIC_API_KEY"):
+                print(f"[!] Claude's review didn't come back cleanly (missing billing credit, "
+                      f"or an API error) — falling back to SINGLE-MODEL mode: Gemini's "
+                      f"proposals will be used directly, without Claude's independent check.")
+            else:
+                print(f"[i] ANTHROPIC_API_KEY not set — running in SINGLE-MODEL mode (Gemini "
+                      f"only). Add Anthropic billing credit to restore the two-model cross-check.")
+            single_model_mode = True
+            reviews = [
+                {"approved": True, "review_reasoning": "single-model mode — not independently reviewed"}
+                for _ in proposed
+            ]
+
+        # Extra caution with only one model's judgment behind an action —
+        # halve the normal cap (rounded up to at least 1) rather than
+        # apply the full multi-model budget with no cross-check.
+        action_cap = max(1, _MAX_AGENT_ACTIONS_PER_RUN // 2) if single_model_mode else _MAX_AGENT_ACTIONS_PER_RUN
 
         applied = 0
         for action, review in zip(proposed, reviews):
@@ -492,16 +506,19 @@ def run_channel_manager():
                 print(f"[i] Claude REJECTED: {action.get('type')} on {video_id} "
                       f"— {review.get('review_reasoning', '')}")
                 continue
-            if applied >= _MAX_AGENT_ACTIONS_PER_RUN:
-                print(f"[i] Reached the {_MAX_AGENT_ACTIONS_PER_RUN}-action safety cap for this run, "
+            if applied >= action_cap:
+                print(f"[i] Reached the {action_cap}-action safety cap for this run "
+                      f"({'single-model mode' if single_model_mode else 'two-model mode'}), "
                       f"skipping the rest even though approved.")
                 break
-            print(f"[+] Both models agree: {action.get('type')} on {video_id} "
+            agreement_note = "Gemini proposed (single-model mode)" if single_model_mode else "Both models agree"
+            print(f"[+] {agreement_note}: {action.get('type')} on {video_id} "
                   f"— {review.get('review_reasoning', '')}")
             if _execute_action(youtube, action):
                 applied += 1
 
-        print(f"\n[✓] Applied {applied} agreed-upon action(s) this run.")
+        print(f"\n[✓] Applied {applied} action(s) this run"
+              f"{' (single-model mode — Claude unavailable)' if single_model_mode else ''}.")
 
     except KeyError as e:
         print(f"[i] Channel manager skipped — missing env var {e}.")
