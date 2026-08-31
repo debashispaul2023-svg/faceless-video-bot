@@ -55,5 +55,24 @@
     "new_thumbnail_generated": true,
     "timestamp": "2026-08-30T14:02:47.840066+00:00",
     "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "zCnG_hflYG0",
+    "new_title": "The Hidden Social Security Tax Trap \u26a0\ufe0f",
+    "new_tags": [
+      "social security taxes",
+      "retirement planning",
+      "tax torpedo",
+      "provisional income",
+      "retirement tax strategy",
+      "how social security is taxed",
+      "personal finance",
+      "avoid retirement taxes"
+    ],
+    "reasoning": "The video has 0 views after 580 hours. The original title 'The Tax Torpedo' is too obscure for general search. Rewriting it to target 'Social Security Tax' and 'provisional income' improves search discoverability without promising guaranteed tax avoidance.",
+    "new_thumbnail_generated": true,
+    "timestamp": "2026-08-31T16:24:00.518587+00:00",
+    "applied": false
   }
 ]
