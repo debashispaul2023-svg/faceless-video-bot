@@ -643,5 +643,29 @@
     "prompt_version": "v1",
     "title": "The Utility Bill Credit Trap",
     "published_at": "2026-08-31T16:12:51.320564+00:00"
+  },
+  {
+    "video_id": "lNS-TphywmQ",
+    "category": "financial independence and retirement planning",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The Target-Date Retirement Illusion",
+    "published_at": "2026-09-01T13:08:13.176795+00:00"
+  },
+  {
+    "video_id": "4uo8jQMKTJM",
+    "category": "budgeting and saving money",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The Hyper-Budgeting Myth",
+    "published_at": "2026-09-01T13:16:32.312133+00:00"
+  },
+  {
+    "video_id": "kZogKe6ocgk",
+    "category": "side hustles and making money online",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The Ghost Portfolio Method",
+    "published_at": "2026-09-01T13:25:26.078227+00:00"
   }
 ]
