@@ -667,5 +667,29 @@
     "prompt_version": "v1",
     "title": "The Ghost Portfolio Method",
     "published_at": "2026-09-01T13:25:26.078227+00:00"
+  },
+  {
+    "video_id": "hu9aTi_jQn0",
+    "category": "budgeting and saving money",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The Bulk-Buy Budget Leak",
+    "published_at": "2026-09-02T12:36:57.203908+00:00"
+  },
+  {
+    "video_id": "xjOhouvESsk",
+    "category": "financial independence and retirement planning",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "fallback",
+    "title": "4 Retirement Rules Nobody Follows (But Should)",
+    "published_at": "2026-09-02T12:46:11.317917+00:00"
+  },
+  {
+    "video_id": "ua-ocp2nUJg",
+    "category": "financial independence and retirement planning",
+    "hook_technique": "everyday_comparison",
+    "prompt_version": "v1",
+    "title": "The Subscription Retirement Bleed",
+    "published_at": "2026-09-02T12:56:51.376240+00:00"
   }
 ]
