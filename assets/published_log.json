@@ -691,5 +691,29 @@
     "prompt_version": "v1",
     "title": "The Subscription Retirement Bleed",
     "published_at": "2026-09-02T12:56:51.376240+00:00"
+  },
+  {
+    "video_id": "CW1Cl3dI_GU",
+    "category": "financial independence and retirement planning",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The Diversification Illusion in Retirement",
+    "published_at": "2026-09-04T12:40:53.102774+00:00"
+  },
+  {
+    "video_id": "4qnR3cSUS9o",
+    "category": "debt management and credit scores",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "fallback",
+    "title": "4 Credit Score Rules Banks Hope You Never Learn",
+    "published_at": "2026-09-04T12:50:53.850461+00:00"
+  },
+  {
+    "video_id": "fVx2Vj_264I",
+    "category": "budgeting and saving money",
+    "hook_technique": "everyday_comparison",
+    "prompt_version": "v1",
+    "title": "The Return-Window Budget Leak",
+    "published_at": "2026-09-04T12:59:28.562362+00:00"
   }
 ]
