@@ -92,5 +92,25 @@
     "new_thumbnail_generated": true,
     "timestamp": "2026-09-05T11:58:55.509759+00:00",
     "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "zCnG_hflYG0",
+    "new_title": "The Hidden Social Security Tax Trap \ud83d\uded1",
+    "new_tags": [
+      "social security",
+      "retirement planning",
+      "tax torpedo",
+      "retirement taxes",
+      "personal finance",
+      "tax strategy",
+      "financial literacy",
+      "social security benefits",
+      "tax traps"
+    ],
+    "reasoning": "This video has 0 views after 720+ hours. The current title 'The Tax Torpedo' is too obscure and fails to utilize high-volume search terms like 'Social Security' or 'retirement taxes'. The rewritten metadata targets searchable terms while keeping the content strictly educational and YMYL-compliant.",
+    "new_thumbnail_generated": true,
+    "timestamp": "2026-09-06T12:26:45.476883+00:00",
+    "applied": false
   }
 ]
