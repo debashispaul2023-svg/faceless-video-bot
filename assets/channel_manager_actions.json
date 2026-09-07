@@ -112,5 +112,24 @@
     "new_thumbnail_generated": true,
     "timestamp": "2026-09-06T12:26:45.476883+00:00",
     "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "zCnG_hflYG0",
+    "new_title": "How Social Security Taxes Work (The Tax Torpedo) \u26a0\ufe0f",
+    "new_tags": [
+      "social security taxes",
+      "tax torpedo",
+      "retirement planning",
+      "personal finance",
+      "social security benefits",
+      "tax planning",
+      "retirement tax trap",
+      "financial literacy"
+    ],
+    "reasoning": "This video has 0 views after 746 hours. The original title 'The Tax Torpedo' is too cryptic and fails to leverage high-volume search terms like Social Security taxes. The new metadata clarifies the topic immediately while maintaining strict educational compliance.",
+    "new_thumbnail_generated": false,
+    "timestamp": "2026-09-07T14:25:09.124449+00:00",
+    "applied": false
   }
 ]
