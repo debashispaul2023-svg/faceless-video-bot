@@ -45,7 +45,12 @@ def _try_one_elevenlabs_key(api_key: str, text: str, output_path: Path):
     payload = {
         "text": clean_text,
         "model_id": ELEVENLABS_MODEL_ID,
-        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
+        "voice_settings": {
+            "stability": 0.32,          # slightly lower = more dynamic/expressive for Shorts
+            "similarity_boost": 0.75,
+            "style": 0.45,              # adds some performance energy
+            "use_speaker_boost": True
+        },
     }
     params = {"output_format": "mp3_44100_128"}
 

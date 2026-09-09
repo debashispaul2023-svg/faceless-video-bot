@@ -11,17 +11,18 @@ import config
 
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
-# The ONLY three times a video is ever allowed to publish. Nothing in this
-# file ever schedules outside these exact clock times (IST).
-DAILY_SLOTS = [(3, 0), (17, 0), (22, 30)]  # 3:00 AM, 5:00 PM, 10:30 PM
+# The ONLY time a video is ever allowed to publish. Nothing in this
+# file ever schedules outside this exact clock time (IST).
+# One high-quality video per day at peak evening engagement window.
+DAILY_SLOTS = [(17, 0)]  # 5:00 PM IST
 
 
-def find_next_available_slots(count: int = 3):
+def find_next_available_slots(count: int = 1):
     """
     Looks at what's ALREADY scheduled/published on this channel and returns
     the next `count` FREE slots as (day_offset, hour, minute) tuples —
     filling any gaps in today first, then tomorrow, then the day after, etc.
-    A day only gets skipped once all 3 of ITS fixed slots are taken.
+    A day only gets skipped once its fixed slot is taken.
 
     This is a one-time, up-front lookahead (called once per run, before any
     uploading starts) — NOT a per-upload dynamic override. Once a slot is
@@ -35,7 +36,7 @@ def find_next_available_slots(count: int = 3):
     booked = {}
     video_ids = []
     page_token = None
-    for _ in range(3):  # a handful of pages is plenty for a 3-a-day channel
+    for _ in range(3):  # a handful of pages is plenty for a 1-a-day channel
         resp = youtube.search().list(
             part="id", forMine=True, type="video", order="date",
             maxResults=50, pageToken=page_token
@@ -101,10 +102,10 @@ def schedule_video_upload(video_path: Path, metadata: dict, target_hour: int,
     main.py hands over — hour, minute, and day_offset. This function does
     NOT look at YouTube, does NOT check what's already scheduled, and does
     NOT decide anything on its own. main.py is the single source of truth
-    for scheduling (index // 3 -> day_offset, index % 3 -> which of the 3
-    daily slots). No dynamic/API-based slot-hunting logic lives here —
-    that was the source of videos landing at random times, and it has been
-    removed entirely on purpose. Keep it that way.
+    for scheduling (via find_next_available_slots). No dynamic/API-based
+    slot-hunting logic lives here — that was the source of videos landing
+    at random times, and it has been removed entirely on purpose. Keep it
+    that way.
 
     The only adjustment made here is pure date arithmetic (not an API
     call): if a same-day slot (day_offset == 0) has already passed by the

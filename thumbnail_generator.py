@@ -75,25 +75,29 @@ def generate_thumbnail(title: str, save_path: Path, seed_extra: str = "") -> boo
         resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content)).convert("RGB")
 
+        # Stronger top gradient for better text readability on any background
         overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
         draw_overlay = ImageDraw.Draw(overlay)
-        draw_overlay.rectangle([0, 0, img.width, img.height * 0.4], fill=(0, 0, 0, 130))
+        draw_overlay.rectangle([0, 0, img.width, int(img.height * 0.42)], fill=(0, 0, 0, 160))
         img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
         draw = ImageDraw.Draw(img)
-        font = ImageFont.truetype(_resolve_thumbnail_font(), 100)
-        max_text_width = img.width - 100
+        # Larger, more aggressive font for Shorts thumbnails (titles are shorter now)
+        font = ImageFont.truetype(_resolve_thumbnail_font(), 110)
+        max_text_width = img.width - 80
         lines = _wrap_text(draw, title, font, max_text_width)[:3]
 
-        line_height = 115
-        start_y = 80
+        line_height = 125
+        start_y = 70
         for i, line in enumerate(lines):
             line_width = draw.textlength(line, font=font)
             x = (img.width - line_width) / 2
             y = start_y + i * line_height
-            for dx, dy in [(-4, 0), (4, 0), (0, -4), (0, 4), (-3, -3), (3, 3), (-3, 3), (3, -3)]:
+            # Thicker black outline for maximum contrast
+            for dx, dy in [(-5, 0), (5, 0), (0, -5), (0, 5), (-4, -4), (4, 4), (-4, 4), (4, -4),
+                           (-3, 0), (3, 0), (0, -3), (0, 3)]:
                 draw.text((x + dx, y + dy), line, font=font, fill="black")
-            draw.text((x, y), line, font=font, fill="yellow")
+            draw.text((x, y), line, font=font, fill="#FFD600")  # bright yellow
 
         img.save(save_path, quality=92)
         return True

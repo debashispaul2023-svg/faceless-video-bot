@@ -23,14 +23,10 @@ PEXELS_PHOTO_SEARCH_URL = "https://api.pexels.com/v1/search"
 _MIN_SOURCE_WIDTH = 720
 
 # How many of the top search results to actually consider per scene before
-# giving up on stock footage and falling back to AI generation. Kept at 1:
-# each relevance check costs a Gemini call, and this project's free-tier
-# quota for gemini-3.5-flash is only 20 requests/DAY total — that quota is
-# shared with script generation (researcher.py) and the top-performer
-# analysis (analytics_feedback.py), so checking 3 candidates per scene x 6
-# scenes could burn the ENTIRE day's quota on relevance-checking ALONE
-# before the 2nd/3rd video of the day even starts generating its script.
-_MAX_CANDIDATES_PER_SEARCH = 1
+# giving up on stock footage and falling back to AI generation. Raised to 3
+# now that we only produce 1 video/day — more candidates = better visual
+# relevance without risking the free-tier Gemini quota.
+_MAX_CANDIDATES_PER_SEARCH = 3
 
 # Circuit breaker: once we see ONE quota-exhausted (429) response from a
 # relevance check, the daily quota is gone for the rest of this run — there
@@ -43,10 +39,10 @@ _relevance_check_quota_exhausted = False
 
 # Hard cap, independent of hitting an actual 429: even successful relevance
 # checks cost real quota out of a 20-requests/day free-tier budget shared
-# with script generation and analytics. Capping total checks per run (all 3
-# videos combined, since main.py runs them in one process) guarantees
-# several requests are always left over for the higher-priority work.
-_MAX_RELEVANCE_CHECKS_PER_RUN = 6
+# with script generation and analytics. Now set higher (1 video/day) so
+# we can quality-check more stock candidates while still leaving headroom
+# for the script + analytics calls.
+_MAX_RELEVANCE_CHECKS_PER_RUN = 12
 _relevance_check_call_count = 0
 
 
@@ -251,7 +247,13 @@ def _generate_ai_image(ai_prompt: str, save_path: Path, seed: int) -> bool:
     """Fallback Goal: reached if BOTH stock searches above found nothing
     relevant — this is deliberately more likely to trigger now than before,
     since irrelevant stock results get rejected instead of accepted."""
-    enhanced_prompt = f"{ai_prompt}, 8k resolution, cinematic lighting, 9:16 vertical"
+    # Force photorealistic style — cartoon / illustration style was leaking
+    # into some Rule 4 / fallback scenes and destroying perceived quality.
+    enhanced_prompt = (
+        f"{ai_prompt}, photorealistic, real photo, cinematic lighting, "
+        f"high detail, 8k, sharp focus, 9:16 vertical, no cartoon, "
+        f"no illustration, no 3d render, no drawing"
+    )
     encoded_prompt = urllib.parse.quote(enhanced_prompt)
     url = (
         f"https://image.pollinations.ai/prompt/{encoded_prompt}"
