@@ -2,10 +2,10 @@ name: Daily Automatic Video Generator & Publisher
 
 on:
   schedule:
-    # দিনে মাত্র ১ বার চলে — এই একটা run-ই ৩টা ভিডিও বানিয়ে
-    # publishAt দিয়ে ৩টা fixed IST slot-এ (3:00 AM / 5:00 PM / 10:30 PM)
-    # schedule করে দেয় — find_next_available_slots() আগে থেকে YouTube
-    # চেক করে ঠিক কোন দিনে বসবে সেটা ঠিক করে (আজ ফুল থাকলে পরের দিন)।
+    # দিনে মাত্র ১ বার চলে — এই একটা run-ই ১টা high-quality ভিডিও বানিয়ে
+    # publishAt দিয়ে fixed IST slot-এ (5:00 PM) schedule করে দেয় —
+    # find_next_available_slots() আগে থেকে YouTube চেক করে ঠিক কোন দিনে
+    # বসবে সেটা ঠিক করে (আজ ফুল থাকলে পরের দিন)।
     # 08:00 UTC (~1:30 PM IST)-এ চালানো হচ্ছে যাতে generate+render+upload
     # করার জন্য যথেষ্ট সময় থাকে।
     - cron: '0 8 * * *'
