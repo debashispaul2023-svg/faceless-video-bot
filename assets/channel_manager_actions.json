@@ -150,5 +150,24 @@
     "new_thumbnail_generated": true,
     "timestamp": "2026-09-08T12:50:16.185752+00:00",
     "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "zCnG_hflYG0",
+    "new_title": "How Social Security Gets Taxed (The Tax Torpedo) \ud83d\uded1",
+    "new_tags": [
+      "social security taxes",
+      "tax torpedo",
+      "retirement planning",
+      "retirement tax trap",
+      "personal finance",
+      "social security benefits",
+      "how to avoid retirement taxes",
+      "financial literacy"
+    ],
+    "reasoning": "The video is over 790 hours old and has 0 views, which is significantly below the channel's top performers (reaching up to 77 views). The original title 'The Tax Torpedo' is too obscure for general search or feed discovery. Renaming it to focus on 'How Social Security Gets Taxed' introduces high-intent search terms and immediately explains the stakes to the viewer without making misleading financial promises.",
+    "new_thumbnail_generated": true,
+    "timestamp": "2026-09-09T13:13:40.731377+00:00",
+    "applied": false
   }
 ]
