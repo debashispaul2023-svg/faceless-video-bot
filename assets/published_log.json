@@ -739,5 +739,29 @@
     "prompt_version": "v1",
     "title": "The Infinite Leverage Side Hustle",
     "published_at": "2026-09-06T12:16:22.726209+00:00"
+  },
+  {
+    "video_id": "CON4w2PKqis",
+    "category": "investing and wealth building",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The ETF Overlap Trap Exposed",
+    "published_at": "2026-09-09T12:46:18.794305+00:00"
+  },
+  {
+    "video_id": "z29sjvZ_ddo",
+    "category": "financial independence and retirement planning",
+    "hook_technique": "counter_intuitive_fact",
+    "prompt_version": "v1",
+    "title": "The Orphaned Account Trap",
+    "published_at": "2026-09-09T12:55:12.800975+00:00"
+  },
+  {
+    "video_id": "_bcG_LIIglM",
+    "category": "investing and wealth building",
+    "hook_technique": "promise_of_reward",
+    "prompt_version": "v1",
+    "title": "The Silent Raise Trap",
+    "published_at": "2026-09-09T13:02:04.594784+00:00"
   }
 ]
