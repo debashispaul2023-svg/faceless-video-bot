@@ -7,6 +7,10 @@ import traceback
 from pathlib import Path
 from google import genai
 from google.genai import types
+try:
+    from auto_improver import load_active_improvements
+except Exception:
+    load_active_improvements = None
 
 # Bump this any time the live prompt (the actual instructions sent to
 # Gemini in generate_script(), not the fallback pool) changes meaningfully.
@@ -410,11 +414,28 @@ def generate_script(topic_type="facts"):
                 "that inform your own original take:\n- " + "\n- ".join(trending_titles)
             )
 
+        # Auto-improver feedback (script + visual rules learned from past performance)
+        improvement_clause = ""
+        try:
+            if load_active_improvements:
+                imp = load_active_improvements()
+                rules = imp.get("script_rules") or []
+                vis = imp.get("visual_rules") or []
+                if rules or vis:
+                    parts = []
+                    if rules:
+                        parts.append("SCRIPT IMPROVEMENT RULES (from channel performance data):\n- " + "\n- ".join(rules))
+                    if vis:
+                        parts.append("VISUAL IMPROVEMENT RULES (from channel performance data):\n- " + "\n- ".join(vis))
+                    improvement_clause = "\n\n" + "\n\n".join(parts)
+        except Exception:
+            pass
+
         prompt = (
             "You are an elite financial advisor and viral YouTube Shorts scriptwriter. Write a "
             "high-retention, psychology-backed finance script strictly tailored for a 25-30 second "
             f"Short, in the category of "
-            f"{category}.{avoid_clause}{retention_clause}{reinforcement_clause}{trending_clause}\n\n"
+            f"{category}.{avoid_clause}{retention_clause}{reinforcement_clause}{trending_clause}{improvement_clause}\n\n"
             "CRITICAL QUALITY RULES (channel retention currently collapses around second 6 — this is "
             "the #1 priority to fix):\n"
             "- FIRST 3 SECONDS = make-or-break. The very first sentence must contain a specific "

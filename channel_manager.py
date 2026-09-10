@@ -1,7 +1,7 @@
 """
-AI Channel Manager — TWO-MODEL AGENT (Gemini proposes, Claude reviews).
+AI Channel Manager — Gemini-only agent.
 
-Runs as a SEPARATE, once-a-day check and does four things:
+Runs as a SEPARATE, once-a-day check and does:
 
   1. Retention analysis: samples recent public videos' audience-retention
      curves to find where viewers tend to drop off, written to
@@ -12,19 +12,11 @@ Runs as a SEPARATE, once-a-day check and does four things:
 
   3. Sends that snapshot to GEMINI, which proposes zero or more specific
      actions (publish a stuck video, rewrite an underperformer's metadata)
-     with its reasoning. Gemini never applies anything itself.
+     with its reasoning.
 
-  4. Sends the SAME snapshot + Gemini's proposal to CLAUDE, which
-     independently reviews each proposed action against the raw data —
-     not just Gemini's reasoning — and approves or rejects it on its own
-     judgment. An action only gets applied if BOTH models agree. This is
-     the actual point of using two models here: one hallucinated or
-     over-eager proposal from either model alone never reaches the real
-     channel, because the other has to independently sign off on it first.
+  4. Applies approved actions (dry-run by default).
 
-  5. Also still warns (can't auto-fix) if the pipeline has gone quiet for
-     36+ hours — the most likely cause is the daily GitHub Actions run
-     failing silently.
+  5. Warns if the pipeline has gone quiet for 36+ hours.
 
 ═══════════════════════════════════════════════════════════════════════
 SAFETY: DRY-RUN BY DEFAULT
@@ -32,15 +24,11 @@ SAFETY: DRY-RUN BY DEFAULT
 This script only LOGS what it would change unless the environment variable
 CHANNEL_MANAGER_APPLY_CHANGES is set to "true". A hard cap
 (_MAX_AGENT_ACTIONS_PER_RUN) also limits how many actions can be applied
-in a single run, no matter how many both models agree on.
+in a single run.
 
-REQUIRES (in addition to the existing YouTube/Analytics OAuth setup):
+REQUIRES:
   - GEMINI_API_KEY        (already used elsewhere in this project)
-  - ANTHROPIC_API_KEY      (NEW — get one at https://console.anthropic.com,
-                            add it as a GitHub Actions secret, and add it to
-                            the channel-manager job's `env:` in
-                            .github/workflows/daily_bot.yml)
-  - `anthropic` package added to requirements.txt (`pip install anthropic`)
+  - YouTube OAuth secrets (same as the main pipeline)
 """
 
 import os
@@ -54,8 +42,11 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google import genai
-import anthropic
 import config
+try:
+    import auto_improver
+except Exception:
+    auto_improver = None
 from thumbnail_generator import generate_thumbnail
 
 APPLY_CHANGES = os.getenv("CHANNEL_MANAGER_APPLY_CHANGES", "false").lower() == "true"
@@ -70,7 +61,6 @@ SCOPES = [
 ]
 
 GEMINI_MODEL = "gemini-3.5-flash"
-ANTHROPIC_MODEL = "claude-sonnet-5"  # swap to "claude-haiku-4-5-20251001" for a cheaper/faster reviewer if cost matters more than review depth
 
 _MIN_AGE_HOURS_FOR_REVIEW = 48
 _MAX_AGE_DAYS_FOR_REVIEW = 21
@@ -207,7 +197,7 @@ def _analyze_retention_dropoff(youtube, analytics, video_ids: list):
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Two-model agent: Gemini proposes, Claude independently reviews
+# Gemini-only agent
 # ─────────────────────────────────────────────────────────────────────────
 
 def _gather_channel_snapshot(youtube, analytics, video_ids: list) -> list:
@@ -215,7 +205,7 @@ def _gather_channel_snapshot(youtube, analytics, video_ids: list) -> list:
     Collects one compact data snapshot per tracked video — status,
     schedule, title, description, tags, age, views, retention — gathered
     ONCE here so neither model needs its own YouTube API access; they only
-    ever see this snapshot (and, for Claude, Gemini's proposal on top of it).
+    ever see this snapshot.
     """
     now = datetime.now(timezone.utc)
     snapshot = []
@@ -273,7 +263,7 @@ def _gemini_propose_actions(snapshot: list) -> list:
     First opinion: Gemini reviews the whole channel snapshot and proposes
     zero or more specific actions, each with its reasoning. This is a
     PROPOSAL only — Gemini never applies anything itself, and every
-    proposal still has to survive Claude's independent review below.
+    proposals are applied directly (with safety caps).
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -322,57 +312,9 @@ def _gemini_propose_actions(snapshot: list) -> list:
         return []
 
 
-def _claude_review_actions(snapshot: list, proposed_actions: list) -> list:
-    """
-    Second opinion: Claude independently reviews EACH of Gemini's proposed
-    actions against the SAME raw snapshot data — not just Gemini's stated
-    reasoning — and approves or rejects it on its own judgment. Nothing
-    gets applied unless BOTH models agree; this cross-check is the actual
-    safety value of running two models instead of one.
-    """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key or not proposed_actions:
-        if not api_key:
-            print("[i] ANTHROPIC_API_KEY not set — skipping the review step (no actions will be applied).")
-        return []
-
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        prompt = (
-            "You are the second, independent reviewer for a personal-finance "
-            "YouTube channel-management agent. Another AI (Gemini) proposed the "
-            "actions below after reviewing the channel snapshot. Review EACH "
-            "proposed action independently against the raw snapshot data — verify "
-            "it against the actual numbers/status given, don't just trust Gemini's "
-            "stated reasoning.\n\n"
-            "REJECT an action if: the reasoning doesn't actually hold up against "
-            "the snapshot data, a proposed new title/description reads as "
-            "clickbait-misleading or implies a guaranteed financial return/"
-            "outcome, or the action just seems unnecessary or low-value.\n\n"
-            f"CHANNEL SNAPSHOT:\n{json.dumps(snapshot, indent=2)}\n\n"
-            f"PROPOSED ACTIONS:\n{json.dumps(proposed_actions, indent=2)}\n\n"
-            "Return ONLY a valid JSON array, with exactly one entry per proposed "
-            "action IN THE SAME ORDER, each with exactly this shape:\n"
-            '{"approved": true, "review_reasoning": "..."}'
-        )
-        response = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = "".join(block.text for block in response.content if hasattr(block, "text")).strip()
-        if raw.startswith("```"):
-            raw = raw.strip("`").lstrip("json").strip()
-        reviews = json.loads(raw)
-        return reviews if isinstance(reviews, list) else []
-    except Exception as e:
-        print(f"[!] Claude review step failed (non-fatal, no actions this run): {e}")
-        traceback.print_exc()
-        return []
-
 
 def _execute_action(youtube, action: dict) -> bool:
-    """Applies ONE action that both Gemini proposed AND Claude approved.
+    """Applies ONE action that Gemini proposed.
     Respects APPLY_CHANGES (dry-run by default) exactly like the rest of
     this pipeline."""
     action_type = action.get("type")
@@ -441,7 +383,7 @@ def _execute_action(youtube, action: dict) -> bool:
 
 def run_channel_manager():
     print("=" * 60)
-    print(f"🤖 AI CHANNEL MANAGER (Gemini proposes + Claude reviews) — "
+    print(f"🤖 AI CHANNEL MANAGER (Gemini-only) — "
           f"{'LIVE (will apply changes)' if APPLY_CHANGES else 'DRY RUN (logging only)'}")
     print("=" * 60)
 
@@ -476,49 +418,20 @@ def run_channel_manager():
             return
         print(f"[+] Gemini proposed {len(proposed)} action(s).")
 
-        print("[+] Asking Claude to independently review the proposal...")
-        reviews = _claude_review_actions(snapshot, proposed)
-
-        single_model_mode = False
-        if len(reviews) != len(proposed):
-            if os.getenv("ANTHROPIC_API_KEY"):
-                print(f"[!] Claude's review didn't come back cleanly (missing billing credit, "
-                      f"or an API error) — falling back to SINGLE-MODEL mode: Gemini's "
-                      f"proposals will be used directly, without Claude's independent check.")
-            else:
-                print(f"[i] ANTHROPIC_API_KEY not set — running in SINGLE-MODEL mode (Gemini "
-                      f"only). Add Anthropic billing credit to restore the two-model cross-check.")
-            single_model_mode = True
-            reviews = [
-                {"approved": True, "review_reasoning": "single-model mode — not independently reviewed"}
-                for _ in proposed
-            ]
-
-        # Extra caution with only one model's judgment behind an action —
-        # halve the normal cap (rounded up to at least 1) rather than
-        # apply the full multi-model budget with no cross-check.
-        action_cap = max(1, _MAX_AGENT_ACTIONS_PER_RUN // 2) if single_model_mode else _MAX_AGENT_ACTIONS_PER_RUN
-
+        action_cap = _MAX_AGENT_ACTIONS_PER_RUN
         applied = 0
-        for action, review in zip(proposed, reviews):
+        for action in proposed:
             video_id = action.get("video_id")
-            if not review.get("approved"):
-                print(f"[i] Claude REJECTED: {action.get('type')} on {video_id} "
-                      f"— {review.get('review_reasoning', '')}")
-                continue
             if applied >= action_cap:
-                print(f"[i] Reached the {action_cap}-action safety cap for this run "
-                      f"({'single-model mode' if single_model_mode else 'two-model mode'}), "
-                      f"skipping the rest even though approved.")
+                print(f"[i] Reached the {action_cap}-action safety cap for this run, "
+                      f"skipping the rest.")
                 break
-            agreement_note = "Gemini proposed (single-model mode)" if single_model_mode else "Both models agree"
-            print(f"[+] {agreement_note}: {action.get('type')} on {video_id} "
-                  f"— {review.get('review_reasoning', '')}")
+            print(f"[+] Gemini proposed: {action.get('type')} on {video_id} "
+                  f"— {action.get('reasoning', '')[:120]}")
             if _execute_action(youtube, action):
                 applied += 1
 
-        print(f"\n[✓] Applied {applied} action(s) this run"
-              f"{' (single-model mode — Claude unavailable)' if single_model_mode else ''}.")
+        print(f"\n[✓] Applied {applied} action(s) this run.")
 
     except KeyError as e:
         print(f"[i] Channel manager skipped — missing env var {e}.")
@@ -526,6 +439,13 @@ def run_channel_manager():
         print(f"[i] Channel manager skipped (likely needs the yt-analytics.readonly "
               f"re-auth — see analytics_feedback.py): {e}")
         traceback.print_exc()
+
+    # Also run the closed-loop quality improver here (has analytics access).
+    try:
+        if auto_improver:
+            auto_improver.run_auto_improve()
+    except Exception as e:
+        print(f"[i] Auto-improver skipped (non-fatal): {e}")
 
     print("=" * 60)
 

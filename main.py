@@ -7,6 +7,10 @@ from video_renderer import render_final_video
 from youtube_uploader import schedule_video_upload, find_next_available_slots
 from instagram_uploader import upload_to_instagram
 import analytics_feedback
+try:
+    import auto_improver
+except Exception:
+    auto_improver = None
 
 
 def process_single_short(index: int, day_offset: int, target_hour: int, target_minute: int):
@@ -78,6 +82,15 @@ def main():
         analytics_feedback.update_category_weights()
     except Exception as e:
         print(f"[i] Analytics feedback loop skipped this run (non-fatal): {e}")
+        traceback.print_exc()
+
+    # Closed-loop quality improver: analyze past videos → diagnose → update
+    # script/caption/editing rules for THIS and future runs.
+    try:
+        if auto_improver:
+            auto_improver.run_auto_improve()
+    except Exception as e:
+        print(f"[i] Auto-improver skipped this run (non-fatal): {e}")
         traceback.print_exc()
 
     # Figure out where today's single video belongs BEFORE generating

@@ -12,6 +12,10 @@ from moviepy import (
     concatenate_audioclips, vfx, afx
 )
 import config
+try:
+    from auto_improver import load_active_improvements
+except Exception:
+    load_active_improvements = None
 
 # moviepy>=2.0 REQUIRES an explicit font file path for TextClip — it will not
 # silently fall back to a system default. If no valid path is given, TextClip
@@ -151,6 +155,33 @@ _CTA_MOCKUP_WIDTH_RATIO = 0.80
 _CTA_MOCKUP_Y_RATIO = 0.38
 _CTA_MOCKUP_TYPE_SECONDS = 1.2  # how long the typing animation takes to finish
 
+
+
+# --- Auto-improver overrides (learned from channel performance) ---------------
+try:
+    if load_active_improvements:
+        _imp = load_active_improvements()
+        _cap = _imp.get("caption") or {}
+        _ed = _imp.get("editing") or {}
+        if _cap.get("font_size"):
+            _CAPTION_FONT_SIZE = int(_cap["font_size"])
+        if _cap.get("chunk_size"):
+            _CAPTION_CHUNK_SIZE = int(_cap["chunk_size"])
+        if _cap.get("emphasis_font_size"):
+            _CAPTION_EMPHASIS_FONT_SIZE = int(_cap["emphasis_font_size"])
+        if _cap.get("y_ratio"):
+            _CAPTION_Y_RATIO = float(_cap["y_ratio"])
+        if _ed.get("crossfade_duration") is not None:
+            _CROSSFADE_DURATION = float(_ed["crossfade_duration"])
+        if _ed.get("ken_burns_zoom") is not None:
+            _KEN_BURNS_ZOOM = float(_ed["ken_burns_zoom"])
+        if _ed.get("punch_in_duration") is not None:
+            _PUNCH_IN_DURATION = float(_ed["punch_in_duration"])
+        if _ed.get("punch_in_overshoot") is not None:
+            _PUNCH_IN_OVERSHOOT = float(_ed["punch_in_overshoot"])
+except Exception:
+    pass
+# -----------------------------------------------------------------------------
 
 def _resolve_font_path() -> str:
     for candidate in _FONT_CANDIDATES:
