@@ -1,0 +1,20 @@
+{
+  "version": 0,
+  "updated_at": null,
+  "diagnosis_summary": "baseline \u2014 no auto-improvements applied yet",
+  "script_rules": [],
+  "caption": {
+    "font_size": 70,
+    "chunk_size": 3,
+    "emphasis_font_size": 94,
+    "y_ratio": 0.7
+  },
+  "editing": {
+    "crossfade_duration": 0.18,
+    "ken_burns_zoom": 0.22,
+    "punch_in_duration": 0.18,
+    "punch_in_overshoot": 0.1
+  },
+  "visual_rules": [],
+  "problems_addressed": []
+}
