@@ -7,10 +7,6 @@ from video_renderer import render_final_video
 from youtube_uploader import schedule_video_upload, find_next_available_slots
 from instagram_uploader import upload_to_instagram
 import analytics_feedback
-try:
-    import auto_improver
-except Exception:
-    auto_improver = None
 
 
 def process_single_short(index: int, day_offset: int, target_hour: int, target_minute: int):
@@ -71,7 +67,7 @@ def process_single_short(index: int, day_offset: int, target_hour: int, target_m
 
 def main():
     print("=" * 60)
-    print("🎬 STARTING AUTOMATION PIPELINE FOR 1 SHORT")
+    print("🎬 STARTING AUTOMATION PIPELINE FOR 3 SHORTS")
     print("=" * 60)
 
     # Best-effort: pull in performance data from previously published videos
@@ -84,36 +80,44 @@ def main():
         print(f"[i] Analytics feedback loop skipped this run (non-fatal): {e}")
         traceback.print_exc()
 
-    # Closed-loop quality improver: analyze past videos → diagnose → update
-    # script/caption/editing rules for THIS and future runs.
+    # Figure out where today's batch of 3 actually belongs BEFORE generating
+    # anything — if the channel is already fully booked (3 videos) through
+    # a future date, these 3 new videos automatically land on the next day
+    # that still has room, always at the exact 3:00 AM / 5:00 PM / 10:30 PM
+    # IST slots and never anywhere else.
+    print("\n[+] Checking the channel for the next available upload day/slots...")
     try:
-        if auto_improver:
-            auto_improver.run_auto_improve()
-    except Exception as e:
-        print(f"[i] Auto-improver skipped this run (non-fatal): {e}")
-        traceback.print_exc()
-
-    # Figure out where today's single video belongs BEFORE generating
-    # anything — prefers the fixed daily slot (5:00 PM IST by default).
-    # If that slot is already taken, it rolls forward to the next free day.
-    print("\n[+] Checking the channel for the next available upload day/slot...")
-    try:
-        slots = find_next_available_slots(count=1)
-        if len(slots) < 1:
-            raise RuntimeError(f"Only found {len(slots)} free slot(s), expected 1.")
+        slots = find_next_available_slots(count=3)
+        if len(slots) < 3:
+            raise RuntimeError(f"Only found {len(slots)} free slot(s), expected 3.")
     except Exception as e:
         print(f"[!] Could not determine available slots from the channel ({e}). "
-              f"Falling back to today's fixed 5:00 PM IST slot (day_offset=0) — this may "
+              f"Falling back to today's 3 fixed slots (day_offset=0) — this may "
               f"collide with something already scheduled today, so check YouTube "
               f"Studio afterward.")
         traceback.print_exc()
-        slots = [(0, 17, 0)]
+        slots = [(0, 3, 0), (0, 17, 0), (0, 22, 30)]
 
-    day_offset, target_hour, target_minute = slots[0]
-    process_single_short(0, day_offset, target_hour, target_minute)
+    successes = 0
+    for i in range(3):
+        day_offset, target_hour, target_minute = slots[i]
+        try:
+            process_single_short(i, day_offset, target_hour, target_minute)
+            successes += 1
+        except Exception as e:
+            # A rendering/upload crash on ONE video (e.g. an unexpected
+            # MoviePy edge case) must never take down the other 2 — each
+            # video already has its own internal fallbacks (script,
+            # ElevenLabs, stock/AI visuals); this is the same philosophy
+            # applied one level up, at the whole-video granularity.
+            print(f"\n[!] Short #{i + 1} failed completely and was skipped: {e}")
+            traceback.print_exc()
+        if i < 2:
+            print("\n[⏳] Waiting 20 seconds before starting next video...")
+            time.sleep(20)
 
     print("\n" + "=" * 60)
-    print("🎉 SHORT GENERATED AND UPLOADED SUCCESSFULLY!")
+    print(f"🎉 FINISHED: {successes}/3 shorts generated and uploaded successfully.")
     print("=" * 60)
 
 
