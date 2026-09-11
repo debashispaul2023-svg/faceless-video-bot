@@ -129,12 +129,20 @@ def update_category_weights():
             return
 
         now = datetime.now(timezone.utc)
-        cutoff_old = now - timedelta(days=7)
+        # No upper bound here (deliberately unlike some other checks in
+        # this project that only look at 'recent' videos) — YouTube
+        # Analytics data for a video published within the last ~2 days can
+        # still be incomplete/unsettled and come back as all-zero, which
+        # was silently making every category and prompt-version score
+        # exactly 0.0 even though real, later-settled data existed for the
+        # same videos. Category/version performance isn't a "what's
+        # trending right now" signal, so there's no reason to exclude
+        # older, fully-settled videos from it.
         cutoff_recent = now - timedelta(hours=20)
 
         candidates = [
             e for e in entries
-            if cutoff_old < datetime.fromisoformat(e["published_at"]) < cutoff_recent
+            if datetime.fromisoformat(e["published_at"]) < cutoff_recent
         ]
         if not candidates:
             print("[i] Analytics feedback: no videos old enough yet to have meaningful stats.")
