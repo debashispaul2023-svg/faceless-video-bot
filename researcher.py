@@ -7,10 +7,6 @@ import traceback
 from pathlib import Path
 from google import genai
 from google.genai import types
-try:
-    from auto_improver import load_active_improvements
-except Exception:
-    load_active_improvements = None
 
 # Bump this any time the live prompt (the actual instructions sent to
 # Gemini in generate_script(), not the fallback pool) changes meaningfully.
@@ -19,10 +15,10 @@ except Exception:
 # "v1" with real view/retention data — instead of just trusting that a
 # prompt edit was an improvement. Never overwrite performance history: bump
 # the number, don't reuse an old one.
-_PROMPT_VERSION = "v4"
+_PROMPT_VERSION = "v1"
 
 # Where we remember which titles we've already used, so we stop repeating
-# ourselves both within a single run and across days.
+# ourselves both within a single run (3 shorts) and across days.
 _HISTORY_FILE = Path(__file__).resolve().parent / "assets" / "used_topics.json"
 
 _TOPIC_CATEGORIES = [
@@ -43,7 +39,7 @@ _TOPIC_CATEGORIES = [
 # scripts instead of always logging as "unspecified".
 _FALLBACK_SCRIPTS = [
     {
-        "title": "4 Money Rules That Keep You Broke",
+        "title": "4 Money Rules That Keep You Broke If You Ignore Them",
         "category": "budgeting and saving money",
         "hook_technique": "counter_intuitive_fact",
         "description": "Follow these 4 rules before you spend another dollar. #shorts #finance #budgeting",
@@ -59,7 +55,7 @@ _FALLBACK_SCRIPTS = [
         ],
     },
     {
-        "title": "4 Investing Rules Beginners Never Hear",
+        "title": "4 Investing Rules Nobody Tells Beginners",
         "category": "investing and wealth building",
         "hook_technique": "counter_intuitive_fact",
         "description": "The 4 rules that separate wealthy investors from everyone else. #shorts #investing",
@@ -75,7 +71,7 @@ _FALLBACK_SCRIPTS = [
         ],
     },
     {
-        "title": "Banks Hope You Never Learn These 4 Rules",
+        "title": "4 Credit Score Rules Banks Hope You Never Learn",
         "category": "debt management and credit scores",
         "hook_technique": "counter_intuitive_fact",
         "description": "Fix your credit score before it's too late. #shorts #credit",
@@ -91,7 +87,7 @@ _FALLBACK_SCRIPTS = [
         ],
     },
     {
-        "title": "4 Side Hustle Rules That Actually Work",
+        "title": "4 Side Hustle Rules That Actually Make Money",
         "category": "side hustles and making money online",
         "hook_technique": "everyday_comparison",
         "description": "Skip the fluff — these 4 rules actually work. #shorts #sidehustle",
@@ -107,7 +103,7 @@ _FALLBACK_SCRIPTS = [
         ],
     },
     {
-        "title": "4 Retirement Rules Almost Nobody Follows",
+        "title": "4 Retirement Rules Nobody Follows (But Should)",
         "category": "financial independence and retirement planning",
         "hook_technique": "counter_intuitive_fact",
         "description": "Retiring comfortably comes down to these 4 rules. #shorts #retirement",
@@ -254,7 +250,7 @@ def _fetch_trending_finance_titles(limit: int = 8) -> list:
     on YouTube (last 7 days, US region) so the script prompt can lean
     toward angles that are actually resonating right now. Cached in-memory
     for this process's lifetime since trending topics don't meaningfully
-    change within the few minutes main.py takes to generate the video.
+    change within the few minutes main.py takes to generate 3 videos.
     Never raises.
     """
     import datetime as _dt
@@ -284,7 +280,7 @@ def _fetch_trending_finance_titles(limit: int = 8) -> list:
         return []
 
 
-_MAX_SCRIPT_WORDS = 72  # tighter for better retention (~25-28 seconds)
+_MAX_SCRIPT_WORDS = 75  # ~25-30 seconds at a natural ~155 words/minute speaking pace
 
 
 def _enforce_max_duration(script: str) -> str:
@@ -414,56 +410,27 @@ def generate_script(topic_type="facts"):
                 "that inform your own original take:\n- " + "\n- ".join(trending_titles)
             )
 
-        # Auto-improver feedback (script + visual rules learned from past performance)
-        improvement_clause = ""
-        try:
-            if load_active_improvements:
-                imp = load_active_improvements()
-                rules = imp.get("script_rules") or []
-                vis = imp.get("visual_rules") or []
-                if rules or vis:
-                    parts = []
-                    if rules:
-                        parts.append("SCRIPT IMPROVEMENT RULES (from channel performance data):\n- " + "\n- ".join(rules))
-                    if vis:
-                        parts.append("VISUAL IMPROVEMENT RULES (from channel performance data):\n- " + "\n- ".join(vis))
-                    improvement_clause = "\n\n" + "\n\n".join(parts)
-        except Exception:
-            pass
-
         prompt = (
             "You are an elite financial advisor and viral YouTube Shorts scriptwriter. Write a "
             "high-retention, psychology-backed finance script strictly tailored for a 25-30 second "
             f"Short, in the category of "
-            f"{category}.{avoid_clause}{retention_clause}{reinforcement_clause}{trending_clause}{improvement_clause}\n\n"
-            "CRITICAL QUALITY RULES (channel retention currently collapses around second 6 — this is "
-            "the #1 priority to fix):\n"
-            "- FIRST 3 SECONDS = make-or-break. The very first sentence must contain a specific "
-            "number, dollar amount, percentage, or painful consequence. No soft opens.\n"
-            "- FIRST 6-8 SECONDS must deliver at least TWO concrete stakes + the core promise. "
-            "If a viewer can swipe away at second 5 without feeling FOMO, the script failed.\n"
-            "- Every sentence must deliver NEW information, a number, a consequence, or a "
-            "visceral image. Zero filler. Zero throat-clearing.\n"
-            "- Use short punchy sentences (max 11-13 words). Prefer active voice and 'you'.\n"
-            "- Create open loops early that only resolve at the final rule.\n"
-            "- Speak like a sharp, slightly ruthless friend who hates wasting time.\n\n"
-            "TITLE RULES (this decides impressions):\n"
-            "- Max 6-8 words. Short, punchy, curiosity-gap driven.\n"
-            "- Prefer formats like: 'The $X Trap Most People Fall For', 'Why [Common Habit] "
-            "Is Making You Broke', 'Stop Doing This With Your Money', 'The Hidden Cost of X'.\n"
-            "- Include a number, dollar amount, or strong emotional word when possible.\n"
-            "- Avoid vague poetic titles like 'The Silent Partner Illusion' or 'The Anesthetic "
-            "Effect'. Those underperform on Shorts.\n\n"
-            "STRICT SCRIPT STRUCTURE:\n"
-            "1. THE HOOK (first 3 seconds): a high-stakes, bold psychological hook that forces "
-            "viewers to freeze — lead with the single most shocking claim, number, or consequence "
-            "in the whole script. Pick WHICHEVER of these techniques fits the topic best (vary it "
-            "across scripts, don't always use the same one):\n"
+            f"{category}.{avoid_clause}{retention_clause}{reinforcement_clause}{trending_clause}\n\n"
+            "STRICT SCRIPT STRUCTURE — PAYOFF FIRST, THEN EXPLAIN:\n"
+            "Most low-retention Shorts front-load setup and save the actual payoff for the "
+            "end — by the time it lands, most viewers have already left. Do the opposite: "
+            "state the single biggest number, result, or claim in the whole script "
+            "IMMEDIATELY, then spend the rest of the script explaining why it's true or how "
+            "to act on it. Nothing here should be a countdown building toward a twist — the "
+            "twist already happened in the first line.\n"
+            "1. THE HOOK = THE PAYOFF (first 3 seconds): lead with the single most shocking "
+            "claim, number, or consequence in the whole script, stated as a completed fact — "
+            "not a tease of something coming later. Pick WHICHEVER of these techniques fits "
+            "the topic best (vary it across scripts, don't always use the same one):\n"
             "   a) counter_intuitive_fact: challenge something the viewer assumes is true. Style "
-            "example: 'Smart people NEVER stay broke because they follow these 4 money rules.'\n"
-            "   b) promise_of_reward: tell them exactly what they'll walk away knowing. Style "
-            "example: 'By the end of this, you'll know the exact trick the wealthy use to dodge "
-            "this penalty — and it takes 30 seconds to set up.'\n"
+            "example: 'A 30 percent card balance is quietly costing you 100 credit-score points.'\n"
+            "   b) promise_of_reward: state the exact concrete outcome up front, not a promise "
+            "to reveal it later. Style example: 'This one rule change saves the average person "
+            "eleven thousand dollars over ten years.'\n"
             "   c) everyday_comparison: tie an abstract money concept to something small "
             "and relatable. Style example: 'Your morning coffee habit is quietly costing you fifty "
             "thousand dollars.'\n"
@@ -473,23 +440,29 @@ def generate_script(topic_type="facts"):
             "letter itself).\n"
             "Do NOT ease into it, and never open with 'Did you know...', 'Let's talk about...', or "
             "'Have you ever wondered...'.\n"
-            "2. THREE TO FOUR DISTINCT FINANCIAL RULES: ultra-concise, practical money tips. "
-            "Each rule must feel like a revelation, not a list item. RULE 4 (or the final rule) "
-            "is the single most important, game-changing insight — build a tiny dramatic pause "
-            "(using '...') right before it lands. Prefer 3 strong rules over 4 weak ones if needed.\n"
-            "3. MEME-STYLE CTA: end with a lighthearted, slightly sarcastic comment-trigger. "
-            "Style example: 'Which rule are you breaking right now? Drop the number below.'\n\n"
+            "TITLE FORMAT VARIETY: do not default to 'The [X] Trap/Illusion/Secret' — check the "
+            "avoid-list above and if recent titles already lean on one template, deliberately use a "
+            "different opener this time: a number ('3 Numbers Your Bank Hopes You Never Check'), a "
+            "direct question, a flat contradiction ('Paying off debt fast is costing you money'), "
+            "or a plain statement of the result itself.\n"
+            "2. FOUR DISTINCT SUPPORTING POINTS: these now EXPLAIN or UNPACK the claim already "
+            "made in the hook — why it's true, what causes it, or exactly how to act on it. None "
+            "of them is a secret twist being saved for later; the biggest reveal already happened. "
+            "Keep them ultra-concise and practical, each earning its place.\n"
+            "3. MEME-STYLE CTA: end with a lighthearted, sarcastic/funny comment-trigger instead "
+            "of a formal closing. Style example: 'Comment below how many rules you actually "
+            "follow... or just drop 'Rule 4' if you're lazy like me and hit follow!'\n\n"
             "VOICE:\n"
             "- Ultra-short, fast-paced, punchy sentences. Zero filler.\n"
-            "- Write key emphasis words in UPPERCASE (e.g. 'NEVER', 'STOP', 'THIS ONE RULE').\n"
+            "- Write key emphasis words in UPPERCASE (e.g. 'NEVER', 'STOP', 'CHANGES EVERYTHING').\n"
             "- Use ellipses (...) for short dramatic pauses before key insights.\n"
-            "- Tone: deep, authoritative, confident, slightly urgent — like someone who has seen "
-            "people lose money from ignoring this.\n"
-            "- STRICT WORD COUNT: the 'script' field must be 60 to 72 words total — keep it tight "
-            "so the audio stays under 28 seconds. Do not go over.\n"
+            "- Tone: deep, authoritative, confident, urgent.\n"
+            "- STRICT WORD COUNT: the 'script' field must be 65 to 75 words total — this is "
+            "critical to keep the audio within 25-30 seconds. Do not go over.\n"
             "- The 'script' field must be pure flowing spoken narration ONLY — no bracket labels "
             "like '[HOOK]' or '[RULE 1]', no stage directions, no emojis. Just the words a voice "
-            "actor would actually say, in order: hook → rules → CTA.\n\n"
+            "actor would actually say, in order: hook-with-payoff, then the 4 supporting points, "
+            "then the CTA.\n\n"
             "COMPLIANCE (strict, this is financial content): NEVER recommend a specific stock, "
             "crypto coin, or investment product; NEVER promise or imply a guaranteed return or a "
             "specific dollar/wealth outcome (e.g. 'you will become a millionaire', 'guaranteed "
@@ -500,26 +473,34 @@ def generate_script(topic_type="facts"):
             "the three values described above), 'script' (string, the full narration as "
             "specified above), 'hashtags' (list of strings), "
             "'visual_scenes' (a list of exactly 6 objects, one per beat, in this order: hook, "
-            "rule 1, rule 2, rule 3, rule 4, cta). Each object MUST have the keys "
-            "'search_query' and 'ai_prompt', plus the optional 'sfx_cue'.\n\n"
-            "VISUAL QUALITY RULES (critical — weak first frames are killing retention):\n"
-            "- HOOK scene (first visual) MUST be high-impact and emotional. Prefer: close-up of a "
-            "face with strong emotion (shock, stress, realization), hands freezing over a big "
-            "number on screen, money disappearing, red warning on phone, or a clear before/after "
-            "money moment. NEVER use boring neutral actions like 'hand typing on laptop', "
-            "'person sitting at desk', or generic office shots for the HOOK.\n"
-            "- RULE 4 visual must match the same photorealistic quality as the rest. Never drop "
-            "to cartoon, illustration, or flat graphic style. Keep cinematic photorealistic.\n"
-            "- CTA visual: show a phone screen with comments or a simple follow gesture. Avoid "
-            "random phones that have nothing to do with the topic.\n"
-            "- All ai_prompts must be photorealistic, cinematic lighting, 9:16 vertical. "
-            "No cartoon, no 3D render, no flat illustration.\n"
-            "- search_query: 1-2 broad concrete English words (e.g. 'shocked face phone', "
-            "'money vanishing hand', 'red bank alert'). Avoid abstract words.\n"
-            "- sfx_cue: use 'whoosh' or 'pop' on the HOOK and 'ding' or 'click' on RULE 4 only.\n"
-            "- For one of the middle rules, include one exaggerated reaction face that is "
-            "specific to the topic (not a generic shocked face).\n"
-            "- NEVER reference copyrighted characters, logos, or meme templates."
+            "point 1, point 2, point 3, point 4, cta). Each object MUST have the keys "
+            "'search_query' and 'ai_prompt', plus the optional 'sfx_cue': "
+            "'search_query' (1-2 broad, generic English words suitable for searching a stock "
+            "photo/video library — NOT a full sentence. Use CONCRETE, PHOTOGRAPHABLE things, not "
+            "abstract finance jargon: 'delivery', 'liquidity', or 'asset growth' return poor/irrelevant "
+            "stock matches. Pick something SPECIFIC to what this particular scene is about — vary "
+            "your choice across scenes and don't default to the same object every time (e.g. don't "
+            "make every video's point-1 scene a piggy bank; rotate through things like wallet, bank "
+            "vault, calculator, receipt, house keys, gas pump, grocery cart, coffee cup, whatever "
+            "actually fits this scene's specific point), 'ai_prompt' (a detailed, vivid "
+            "description of the same scene, to be used ONLY if no stock footage is found, suitable "
+            "for an AI image generator, and also used to double-check that any stock footage found "
+            "is actually relevant), and optionally 'sfx_cue' (a short lowercase keyword for a subtle "
+            "sound effect — pick from: 'whoosh', 'pop', 'ding', 'click', 'tick', 'swipe'. A sound "
+            "effect is a CONTENT BEAT, not decoration: only place one on a scene where the on-screen "
+            "number or claim actually changes/reveals (the hook's payoff number is always one; pick "
+            "at most ONE other scene where a second concrete number or fact lands). Omit this key "
+            "entirely on every other scene — a sound on every scene is noise, not emphasis). The "
+            "visual for the HOOK should be the single most visually striking scene in the list, "
+            "since it now carries the payoff. For point 2 or point 3 (pick one), make the "
+            "ai_prompt an exaggerated, funny reaction-style visual to break the monotony — but it "
+            "MUST be specific to THIS video's own topic and props (e.g. reacting to a specific bill, "
+            "a specific chart, a specific object mentioned in the script), with a different setting/"
+            "prop/framing each time. Do NOT reuse a generic 'person looks shocked' description — "
+            "every video on this channel needs a visually distinct reaction shot, not the same stock "
+            "photo of a person's face over and over. This must also be a wholly original AI-generated "
+            "image: NEVER reference or describe any copyrighted character, anime, movie/show still, "
+            "meme template, logo, or trademark."
         )
 
         response = _call_gemini(client, prompt)
