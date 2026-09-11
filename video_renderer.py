@@ -12,10 +12,6 @@ from moviepy import (
     concatenate_audioclips, vfx, afx
 )
 import config
-try:
-    from auto_improver import load_active_improvements
-except Exception:
-    load_active_improvements = None
 
 # moviepy>=2.0 REQUIRES an explicit font file path for TextClip — it will not
 # silently fall back to a system default. If no valid path is given, TextClip
@@ -155,33 +151,6 @@ _CTA_MOCKUP_WIDTH_RATIO = 0.80
 _CTA_MOCKUP_Y_RATIO = 0.38
 _CTA_MOCKUP_TYPE_SECONDS = 1.2  # how long the typing animation takes to finish
 
-
-
-# --- Auto-improver overrides (learned from channel performance) ---------------
-try:
-    if load_active_improvements:
-        _imp = load_active_improvements()
-        _cap = _imp.get("caption") or {}
-        _ed = _imp.get("editing") or {}
-        if _cap.get("font_size"):
-            _CAPTION_FONT_SIZE = int(_cap["font_size"])
-        if _cap.get("chunk_size"):
-            _CAPTION_CHUNK_SIZE = int(_cap["chunk_size"])
-        if _cap.get("emphasis_font_size"):
-            _CAPTION_EMPHASIS_FONT_SIZE = int(_cap["emphasis_font_size"])
-        if _cap.get("y_ratio"):
-            _CAPTION_Y_RATIO = float(_cap["y_ratio"])
-        if _ed.get("crossfade_duration") is not None:
-            _CROSSFADE_DURATION = float(_ed["crossfade_duration"])
-        if _ed.get("ken_burns_zoom") is not None:
-            _KEN_BURNS_ZOOM = float(_ed["ken_burns_zoom"])
-        if _ed.get("punch_in_duration") is not None:
-            _PUNCH_IN_DURATION = float(_ed["punch_in_duration"])
-        if _ed.get("punch_in_overshoot") is not None:
-            _PUNCH_IN_OVERSHOOT = float(_ed["punch_in_overshoot"])
-except Exception:
-    pass
-# -----------------------------------------------------------------------------
 
 def _resolve_font_path() -> str:
     for candidate in _FONT_CANDIDATES:
@@ -546,6 +515,47 @@ def _draw_percentage_ring_frame(percentage: int) -> np.ndarray:
     draw.text(((size - tw) / 2 - tb[0], (size - th) / 2 - tb[1]), text, font=font, fill=(255, 255, 255, 255))
 
     return np.array(img)
+
+
+def _detect_retention_rescue_moment(narration_duration: float):
+    """
+    Reads assets/retention_insights.json (written by channel_manager.py's
+    real audience-retention analysis) and returns the second where THIS
+    channel's own viewers actually tend to drop off — so a stronger
+    visual+audio beat can be placed right before that exact moment, based
+    on real data instead of a guess. Returns None if there's no reliable
+    signal yet, or if the reported second doesn't fall within this
+    specific video's duration.
+    """
+    try:
+        insights_path = config.ASSETS_DIR / "retention_insights.json"
+        if not insights_path.is_file():
+            return None
+        insight = json.loads(insights_path.read_text())
+        dropoff = insight.get("typical_dropoff_second")
+        sample_size = insight.get("sample_size", 0)
+        if not dropoff or sample_size < 3:
+            return None
+        # Land the beat slightly BEFORE the measured drop-off point, so it
+        # intervenes before attention is actually lost rather than after.
+        beat_time = dropoff - 0.4
+        if beat_time < 1.0 or beat_time >= narration_duration - 1.0:
+            return None
+        return beat_time
+    except Exception:
+        return None
+
+
+def _retention_rescue_flash_clip(start_time: float, target_w: int, target_h: int):
+    """A brief, bright edge-flash — a real energy/attention beat timed to
+    land right where this channel's own retention data says viewers are
+    actually bailing, rather than guessing at pacing fixes blind."""
+    flash = (
+        ColorClip(size=(target_w, target_h), color=(255, 255, 255))
+        .with_duration(0.10)
+        .with_start(start_time)
+    )
+    return flash.with_effects([vfx.CrossFadeOut(0.10)])
 
 
 def _percentage_ring_clip(percentage: int, start_time: float, duration: float):
@@ -1013,7 +1023,18 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
     n = len(assets)
     if n > 1:
         if len(sentence_times) == n:
-            scene_durations = [max(0.3, end - start) for (_, start, end) in sentence_times]
+            # Use each sentence's real START time, but let its scene span
+            # all the way to the NEXT sentence's start (or to the end of
+            # the narration for the last one) — not just its own
+            # start/end. Using a sentence's own (start, end) span left the
+            # silence/pause BETWEEN sentences uncovered by any scene at
+            # all, so the assembled video ended up shorter than the
+            # narration audio and crashed when trimmed to match it.
+            starts = [start for (_, start, _end) in sentence_times]
+            scene_durations = []
+            for i in range(n):
+                end_bound = starts[i + 1] if i < n - 1 else narration_clip.duration
+                scene_durations.append(max(0.3, end_bound - starts[i]))
             print(f"[+] Scene cuts synced to real sentence timing ({n} sentences matched {n} scenes).")
         else:
             print(f"[i] Sentence count ({len(sentence_times)}) didn't exactly match scene count "
@@ -1069,8 +1090,14 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
         video_clip = concatenate_videoclips(clips, method="compose")
 
     # Trim back down to exactly the narration length (the crossfade padding
-    # above can leave the video a hair longer than the audio).
-    video_clip = video_clip.subclipped(0, narration_clip.duration)
+    # above can leave the video a hair longer than the audio). Defensively
+    # clamped to the video's OWN actual duration too — if some edge case
+    # ever leaves the assembled video shorter than the narration (this is
+    # what caused a hard crash before the scene-duration fix above), this
+    # never trims past what actually exists, it just uses whichever is
+    # shorter instead of raising.
+    safe_end = min(narration_clip.duration, video_clip.duration)
+    video_clip = video_clip.subclipped(0, safe_end)
 
     # --- 9:16 Shorts framing guarantee ---------------------------------
     # Every per-scene clip is already cover-cropped to VIDEO_WIDTH x
@@ -1185,7 +1212,24 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
             print(f"[!] Percentage ring overlay failed, continuing without it: {e}")
             traceback.print_exc()
 
-    overlay_clips = captions + progress_bar_clips + sticker_clips + percentage_ring_clips + cta_mockup_clips
+    # Retention-rescue beat: a brief flash timed to land right where THIS
+    # channel's own retention data (assets/retention_insights.json, from
+    # channel_manager.py's real audience analysis) shows viewers actually
+    # drop off — a genuine energy beat placed by evidence, not a guess.
+    retention_rescue_clips = []
+    try:
+        rescue_moment = _detect_retention_rescue_moment(narration_clip.duration)
+        if rescue_moment:
+            retention_rescue_clips.append(
+                _retention_rescue_flash_clip(rescue_moment, config.VIDEO_WIDTH, config.VIDEO_HEIGHT)
+            )
+            print(f"[+] Added a retention-rescue beat at {rescue_moment:.2f}s "
+                  f"(this channel's own data shows viewers tend to drop off shortly after this point).")
+    except Exception as e:
+        print(f"[!] Retention-rescue beat failed, continuing without it: {e}")
+
+    overlay_clips = (captions + progress_bar_clips + sticker_clips + percentage_ring_clips
+                      + cta_mockup_clips + retention_rescue_clips)
     final_clip = CompositeVideoClip([video_with_audio] + overlay_clips) if overlay_clips else video_with_audio
 
     output_path = config.OUTPUT_DIR / output_filename
