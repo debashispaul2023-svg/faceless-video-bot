@@ -34,10 +34,10 @@
       "engagement_rate": 0.0
     }
   ],
-  "updated_at": "2026-09-11T10:09:03.143723+00:00",
+  "updated_at": "2026-09-11T12:31:04.485027+00:00",
   "version_scores": {
     "unknown": 39.45,
-    "v1": 35.79,
+    "v1": 35.78,
     "fallback": 57.18
   },
   "version_sample_sizes": {
@@ -45,5 +45,5 @@
     "v1": 34,
     "fallback": 2
   },
-  "version_scores_updated_at": "2026-09-11T10:09:03.143253+00:00"
+  "version_scores_updated_at": "2026-09-11T12:31:04.484436+00:00"
 }
