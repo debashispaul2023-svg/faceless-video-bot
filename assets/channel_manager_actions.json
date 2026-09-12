@@ -150,5 +150,59 @@
     "new_thumbnail_generated": true,
     "timestamp": "2026-09-08T12:50:16.185752+00:00",
     "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "zCnG_hflYG0",
+    "new_title": "The Social Security Tax Trap \ud83d\udea8",
+    "new_tags": [
+      "social security taxes",
+      "retirement planning",
+      "tax torpedo",
+      "social security benefits",
+      "tax planning",
+      "retirement tips",
+      "personal finance"
+    ],
+    "reasoning": "The term 'Tax Torpedo' is a niche financial concept that general viewers do not search for. Renaming the video to focus on the 'Social Security Tax Trap' makes the topic immediately clear, highly searchable, and highly relevant to retirees. It currently has 0 views after 864 hours, performing significantly below the channel's top videos.",
+    "new_thumbnail_generated": true,
+    "timestamp": "2026-09-12T12:18:55.546602+00:00",
+    "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "gKNAlBB1EoY",
+    "new_title": "The Hidden Bill That Ruins Your Mortgage \ud83c\udfe0",
+    "new_tags": [
+      "mortgage tips",
+      "credit score hacks",
+      "home buying guide",
+      "mortgage approval",
+      "credit secrets",
+      "how to buy a house",
+      "personalfinance"
+    ],
+    "reasoning": "'The 1998 Mortgage Credit Trap' is a highly specific title that lacks searchable intent. Reframing the metadata to focus on 'hidden bills ruining a mortgage' directly addresses a common real-world fear for homebuyers, increasing search relevance. It currently has 0 views after 792 hours.",
+    "new_thumbnail_generated": false,
+    "timestamp": "2026-09-12T12:19:25.699415+00:00",
+    "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "TT0nCxgrX9M",
+    "new_title": "4 Rules to Retire Early (Without Lifestyle Creep) \ud83d\udcb8",
+    "new_tags": [
+      "early retirement",
+      "financial freedom",
+      "lifestyle creep",
+      "money habits",
+      "how to retire early",
+      "saving money tips",
+      "personalfinance"
+    ],
+    "reasoning": "While 'Stop Working Forever' is attention-grabbing, it borders on unrealistic hype. Adjusting the title to focus on early retirement and combatting 'lifestyle creep' makes it more credible, educational, and aligns better with personal finance search queries. It currently has 0 views after 782 hours.",
+    "new_thumbnail_generated": false,
+    "timestamp": "2026-09-12T12:19:25.962009+00:00",
+    "applied": false
   }
 ]
