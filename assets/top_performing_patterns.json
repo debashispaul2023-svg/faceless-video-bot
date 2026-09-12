@@ -1,6 +1,28 @@
 {
   "patterns": [
     {
+      "video_id": "SaZ5RvQ7gO8",
+      "title": "The Infinite Leverage Side Hustle",
+      "category": "side hustles and making money online",
+      "hook_technique": "everyday_comparison",
+      "structure_note": "hook style: everyday_comparison; topic angle: side hustles and making money online",
+      "score": 479.09,
+      "views": 19,
+      "average_view_percentage": 239.48,
+      "engagement_rate": 0.0
+    },
+    {
+      "video_id": "uXQeFydIVAk",
+      "title": "The First Payout Trap",
+      "category": "side hustles and making money online",
+      "hook_technique": "counter_intuitive_fact",
+      "structure_note": "hook style: counter_intuitive_fact; topic angle: side hustles and making money online",
+      "score": 440.45,
+      "views": 69,
+      "average_view_percentage": 219.26,
+      "engagement_rate": 0.0145
+    },
+    {
       "video_id": "Qx4Oe5yrxOA",
       "title": "The Platform Rent Trap",
       "category": "side hustles and making money online",
@@ -10,40 +32,18 @@
       "views": 12,
       "average_view_percentage": 203.59,
       "engagement_rate": 0.0
-    },
-    {
-      "video_id": "AnGu3JdJyaY",
-      "title": "The Cheap Side Hustle Trap Exposed",
-      "category": "side hustles and making money online",
-      "hook_technique": "counter_intuitive_fact",
-      "structure_note": "hook style: counter_intuitive_fact; topic angle: side hustles and making money online",
-      "score": 197.93,
-      "views": 6,
-      "average_view_percentage": 82.29,
-      "engagement_rate": 0.3333
-    },
-    {
-      "video_id": "8bM_tq6DjrI",
-      "title": "The 6% Credit Illusion",
-      "category": "debt management and credit scores",
-      "hook_technique": "unspecified",
-      "structure_note": "hook style: unspecified; topic angle: debt management and credit scores",
-      "score": 175.34,
-      "views": 1,
-      "average_view_percentage": 87.67,
-      "engagement_rate": 0.0
     }
   ],
-  "updated_at": "2026-09-11T12:31:04.485027+00:00",
+  "updated_at": "2026-09-12T11:54:51.546961+00:00",
   "version_scores": {
     "unknown": 39.45,
-    "v1": 35.78,
-    "fallback": 57.18
+    "v1": 60.73,
+    "fallback": 57.3
   },
   "version_sample_sizes": {
     "unknown": 72,
-    "v1": 34,
+    "v1": 36,
     "fallback": 2
   },
-  "version_scores_updated_at": "2026-09-11T12:31:04.484436+00:00"
+  "version_scores_updated_at": "2026-09-12T11:54:51.546495+00:00"
 }
