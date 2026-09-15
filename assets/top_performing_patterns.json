@@ -6,7 +6,7 @@
       "category": "side hustles and making money online",
       "hook_technique": "everyday_comparison",
       "structure_note": "hook style: everyday_comparison; topic angle: side hustles and making money online",
-      "score": 479.09,
+      "score": 479.08,
       "views": 25,
       "average_view_percentage": 239.48,
       "engagement_rate": 0.0
@@ -17,7 +17,7 @@
       "category": "side hustles and making money online",
       "hook_technique": "counter_intuitive_fact",
       "structure_note": "hook style: counter_intuitive_fact; topic angle: side hustles and making money online",
-      "score": 440.32,
+      "score": 440.29,
       "views": 69,
       "average_view_percentage": 219.26,
       "engagement_rate": 0.0145
@@ -34,16 +34,16 @@
       "engagement_rate": 0.0
     }
   ],
-  "updated_at": "2026-09-14T14:40:01.071105+00:00",
+  "updated_at": "2026-09-15T13:04:36.465308+00:00",
   "version_scores": {
     "unknown": 40.01,
-    "v1": 62.31,
-    "fallback": 57.3
+    "v1": 61.32,
+    "fallback": 38.2
   },
   "version_sample_sizes": {
     "unknown": 71,
-    "v1": 38,
-    "fallback": 2
+    "v1": 37,
+    "fallback": 3
   },
-  "version_scores_updated_at": "2026-09-14T14:40:01.070540+00:00"
+  "version_scores_updated_at": "2026-09-15T13:04:36.464872+00:00"
 }
