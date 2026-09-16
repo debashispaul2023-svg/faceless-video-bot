@@ -204,5 +204,68 @@
     "new_thumbnail_generated": false,
     "timestamp": "2026-09-12T12:19:25.962009+00:00",
     "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "zCnG_hflYG0",
+    "new_title": "The Social Security Tax Trap Explained \ud83d\udcb8",
+    "new_tags": [
+      "social security",
+      "retirement planning",
+      "tax torpedo",
+      "retirement taxes",
+      "social security tax",
+      "personal finance",
+      "financial literacy",
+      "how taxes work",
+      "money tips",
+      "tax brackets"
+    ],
+    "reasoning": "With 0 views after 962 hours, the original title 'The Tax Torpedo' is too vague. Rewriting it to mention 'Social Security Tax Trap' will target highly relevant search terms and clearly explain what the video is about to boost discoverability.",
+    "new_thumbnail_generated": true,
+    "timestamp": "2026-09-16T13:35:25.921261+00:00",
+    "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "gKNAlBB1EoY",
+    "new_title": "The Forgotten Credit Bill That Ruins Home Buying",
+    "new_tags": [
+      "credit score tips",
+      "mortgage advice",
+      "home buying process",
+      "improve credit score",
+      "credit history",
+      "personal finance",
+      "money tips",
+      "debt management",
+      "financial literacy",
+      "buying a house"
+    ],
+    "reasoning": "This video has 0 views after 890 hours. The current title 'The 1998 Mortgage Credit Trap' is obscure. Changing it to highlight the real-world consequence ('Forgotten Credit Bill That Ruins Home Buying') targets highly searched topics like mortgage eligibility and credit health.",
+    "new_thumbnail_generated": false,
+    "timestamp": "2026-09-16T13:35:56.069553+00:00",
+    "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "TT0nCxgrX9M",
+    "new_title": "4 Money Rules to Help You Retire Early \ud83e\udded",
+    "new_tags": [
+      "retire early",
+      "financial freedom",
+      "lifestyle creep",
+      "money management",
+      "personal finance",
+      "saving money",
+      "wealth building",
+      "budgeting tips",
+      "financial habits",
+      "smart money"
+    ],
+    "reasoning": "The current title '4 Rules to Stop Working Forever' makes an unrealistic, non-YMYL-compliant guarantee and currently has 0 views. The rewrite shifts the focus to early retirement planning and managing lifestyle creep, which is more responsible, realistic, and searchable.",
+    "new_thumbnail_generated": false,
+    "timestamp": "2026-09-16T13:35:56.491144+00:00",
+    "applied": false
   }
 ]
