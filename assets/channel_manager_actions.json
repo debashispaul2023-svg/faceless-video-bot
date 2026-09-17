@@ -267,5 +267,43 @@
     "new_thumbnail_generated": false,
     "timestamp": "2026-09-16T13:35:56.491144+00:00",
     "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "zCnG_hflYG0",
+    "new_title": "The Social Security Tax Trap You Must Avoid \ud83d\uded1",
+    "new_tags": [
+      "social security tax",
+      "tax torpedo",
+      "retirement planning",
+      "retirement taxes",
+      "social security benefits",
+      "tax strategy",
+      "personal finance",
+      "financial literacy"
+    ],
+    "reasoning": "The video has 0 views after 985 hours. The title 'The Tax Torpedo' is too obscure and doesn't target terms that users actually search for. Renaming it to focus on the 'Social Security Tax Trap' targets a high-intent audience looking for retirement tax advice, improving discoverability.",
+    "new_thumbnail_generated": true,
+    "timestamp": "2026-09-17T13:25:01.732535+00:00",
+    "applied": false
+  },
+  {
+    "type": "rewrite_metadata",
+    "video_id": "gKNAlBB1EoY",
+    "new_title": "How a Tiny Bill Can Block Your Mortgage \ud83c\udfe0",
+    "new_tags": [
+      "mortgage tips",
+      "credit score",
+      "buying a home",
+      "home loan approval",
+      "fico score",
+      "credit trap",
+      "personal finance",
+      "financial literacy"
+    ],
+    "reasoning": "The video has 0 views after 913 hours. The original title 'The 1998 Mortgage Credit Trap' is highly specific and doesn't clearly explain the immediate risk to potential homebuyers. Rewriting it to emphasize how small bills affect mortgage approval increases its relevance and search potential.",
+    "new_thumbnail_generated": false,
+    "timestamp": "2026-09-17T13:25:31.863634+00:00",
+    "applied": false
   }
 ]
