@@ -1,4 +1,4 @@
-name: Daily Automatic Video Generator & Publisher
+Nname: Daily Automatic Video Generator & Publisher
 
 on:
   schedule:
