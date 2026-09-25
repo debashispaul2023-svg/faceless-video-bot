@@ -1,150 +1,104 @@
-Nname: Daily Automatic Video Generator & Publisher
+name: Sunny Grove Friends Pipeline
 
 on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "demo | episode | compile | plan"
+        required: true
+        default: "demo"
+        type: choice
+        options:
+          - demo
+          - plan
+          - episode
+          - compile
+      idea:
+        description: "Original story idea (episode mode)"
+        required: false
+        default: "Toto loses a giant mango"
+      upload:
+        description: "Upload to YouTube after QC (still private)"
+        required: false
+        default: false
+        type: boolean
   schedule:
-    # দিনে মাত্র ১ বার চলে — এই একটা run-ই ১টা high-quality ভিডিও বানিয়ে
-    # publishAt দিয়ে fixed IST slot-এ (5:00 PM) schedule করে দেয় —
-    # find_next_available_slots() আগে থেকে YouTube চেক করে ঠিক কোন দিনে
-    # বসবে সেটা ঠিক করে (আজ ফুল থাকলে পরের দিন)।
-    # 08:00 UTC (~1:30 PM IST)-এ চালানো হচ্ছে যাতে generate+render+upload
-    # করার জন্য যথেষ্ট সময় থাকে।
-    - cron: '0 8 * * *'
-  workflow_dispatch: # ম্যানুয়ালি টেস্ট করার জন্য
+    # Daily generate only. Upload stays off unless AUTO_UPLOAD secret is true
+    # AND the workflow input upload=true.
+    - cron: "0 8 * * *"
 
 jobs:
-  build-and-publish:
+  produce:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
-      contents: write # গিটহাবে হিস্ট্রি ফাইল কমিট করার জন্য পারমিশন
+      contents: write
 
     steps:
-    - name: Check out repository
-      uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Install System Dependencies (FFmpeg, ImageMagick, Fonts)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg imagemagick fonts-dejavu-core
+      - name: Install ffmpeg and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-    - name: Install Python Packages
-      run: |
-        pip install -r requirements.txt
+      - name: Install Python packages
+        run: pip install -r requirements.txt
 
-    - name: Run Auto Video Generator & Publisher
-      env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-        ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
-        YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
-        YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-        YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-      run: |
-        python main.py
+      - name: Run pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
+          ELEVENLABS_VOICE_TOTO: ${{ secrets.ELEVENLABS_VOICE_TOTO }}
+          ELEVENLABS_VOICE_MOMO: ${{ secrets.ELEVENLABS_VOICE_MOMO }}
+          ELEVENLABS_VOICE_PIKU: ${{ secrets.ELEVENLABS_VOICE_PIKU }}
+          ELEVENLABS_VOICE_FIKO: ${{ secrets.ELEVENLABS_VOICE_FIKO }}
+          ELEVENLABS_VOICE_NARRATOR: ${{ secrets.ELEVENLABS_VOICE_NARRATOR }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          STORY_PROVIDER: ${{ secrets.STORY_PROVIDER }}
+          VISUAL_PROVIDER: ${{ secrets.VISUAL_PROVIDER }}
+          TTS_PROVIDER: ${{ secrets.TTS_PROVIDER }}
+          AUTO_UPLOAD: "false"
+        run: |
+          MODE="${{ github.event.inputs.mode || 'demo' }}"
+          IDEA="${{ github.event.inputs.idea || 'Toto loses a giant mango' }}"
+          UPLOAD="${{ github.event.inputs.upload || 'false' }}"
 
-    - name: Commit updated bot state (topics history, analytics log)
-      run: |
-        git config --global user.name "GitHub Actions Bot"
-        git config --global user.email "actions@github.com"
+          # Safe defaults when secrets are empty (Actions still runs --demo)
+          export STORY_PROVIDER="${STORY_PROVIDER:-local}"
+          export VISUAL_PROVIDER="${VISUAL_PROVIDER:-local}"
+          export TTS_PROVIDER="${TTS_PROVIDER:-local}"
 
-        for f in assets/used_topics.json assets/published_log.json assets/category_scores.json assets/top_performing_patterns.json; do
-          if [ -f "$f" ]; then
-            git add "$f"
+          if [ "$MODE" = "demo" ]; then
+            python main.py --demo
+          elif [ "$MODE" = "plan" ]; then
+            python main.py --plan-only --idea "$IDEA"
+          elif [ "$MODE" = "compile" ]; then
+            python main.py --compile
+          else
+            if [ "$UPLOAD" = "true" ]; then
+              python main.py --idea "$IDEA" --upload
+            else
+              python main.py --idea "$IDEA"
+            fi
           fi
-        done
 
-        if git diff --cached --quiet; then
-          echo "No changes to commit."
-          exit 0
-        fi
-
-        git commit -m "chore: update bot state [skip ci]"
-
-        # Push can be rejected if something else (e.g. a manual GitHub web
-        # edit, or the channel-manager job) committed to main while this
-        # job was running — pull/rebase to reconcile, then retry a few
-        # times before giving up.
-        for i in 1 2 3; do
-          if git pull --rebase origin main && git push; then
-            echo "Pushed successfully."
-            exit 0
-          fi
-          echo "Push attempt $i failed, retrying in 5s..."
-          sleep 5
-        done
-
-        echo "Could not push after 3 attempts — bot state wasn't saved this run."
-        exit 0
-
-  channel-manager:
-    runs-on: ubuntu-latest
-    needs: build-and-publish
-    if: always()
-    permissions:
-      contents: write # রিটেনশন/অ্যাকশন-লগ ফাইল কমিট করার জন্য পারমিশন
-
-    steps:
-    - name: Check out repository
-      uses: actions/checkout@v3
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-
-    - name: Install System Dependencies (fonts for thumbnail generation)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y fonts-dejavu-core
-
-    - name: Install Python Packages
-      run: pip install -r requirements.txt
-
-    - name: Run AI Channel Manager (Gemini proposes + Claude reviews)
-      env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
-        YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-        YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-        CHANNEL_MANAGER_APPLY_CHANGES: "false"
-      run: python channel_manager.py
-
-    - name: Commit channel manager state
-      run: |
-        git config --global user.name "GitHub Actions Bot"
-        git config --global user.email "actions@github.com"
-
-        for f in assets/channel_manager_actions.json assets/retention_insights.json; do
-          if [ -f "$f" ]; then
-            git add "$f"
-          fi
-        done
-
-        if git diff --cached --quiet; then
-          echo "No changes to commit."
-          exit 0
-        fi
-
-        git commit -m "chore: update channel manager state [skip ci]"
-
-        # Push can be rejected if something else (e.g. a manual GitHub web
-        # edit, or the build-and-publish job) committed to main while this
-        # job was running — pull/rebase to reconcile, then retry a few
-        # times before giving up.
-        for i in 1 2 3; do
-          if git pull --rebase origin main && git push; then
-            echo "Pushed successfully."
-            exit 0
-          fi
-          echo "Push attempt $i failed, retrying in 5s..."
-          sleep 5
-        done
-
-        echo "Could not push after 3 attempts — channel manager's own state"
-        echo "wasn't saved this run, but nothing else was affected."
-        exit 0
+      - name: Upload produced media
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sunny-grove-output
+          path: |
+            output/episodes/**/final.mp4
+            output/episodes/**/thumbnail.jpg
+            output/episodes/**/production_plan.json
+            output/episodes/**/validation.json
+            output/compilations/*.mp4
+          if-no-files-found: warn
+          retention-days: 14
