@@ -1,11 +1,17 @@
 import os
 import datetime
-import pytz
 from pathlib import Path
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+try:
+    import pytz
+except Exception:
+    pytz = None
+try:
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+except Exception:
+    Credentials = Request = build = MediaFileUpload = None
 from thumbnail_generator import generate_thumbnail
 import config
 
@@ -185,3 +191,66 @@ def schedule_video_upload(video_path: Path, metadata: dict, target_hour: int,
               f"phone-verified yet — check youtube.com/verify): {e}")
 
     return video_id
+
+
+def build_cartoon_metadata(plan) -> dict:
+    """Kids-cartoon metadata. Does not claim educational value."""
+    tags = list(plan.tags or [])
+    for extra in [config.SERIES_NAME, "kids cartoon", "animal friends", "original series"]:
+        if extra not in tags:
+            tags.append(extra)
+    description = (
+        f"{plan.description or plan.synopsis}\n\n"
+        f"An original {config.SERIES_NAME} cartoon from {config.STUDIO_NAME}.\n"
+        f"Characters and stories are original.\n"
+    )
+    if plan.moral:
+        description += f"\nStory note: {plan.moral}\n"
+    return {
+        "title": (getattr(plan, "youtube_title", None) or plan.title or config.SERIES_NAME)[:100],
+        "description": description[:4900],
+        "hashtags": tags,
+        "categoryId": config.YOUTUBE_CATEGORY_FILM_ANIMATION,
+        "made_for_kids": config.YOUTUBE_MADE_FOR_KIDS,
+    }
+
+
+def upload_cartoon_episode(video_path, plan, thumbnail_path=None, privacy="private"):
+    """Optional upload. Requires AUTO_UPLOAD=true and a validated package."""
+    if not config.AUTO_UPLOAD:
+        print("[i] AUTO_UPLOAD is false — skipping YouTube publish.")
+        return None
+    youtube = authenticate_youtube()
+    meta = build_cartoon_metadata(plan)
+    body = {
+        "snippet": {
+            "title": meta["title"],
+            "description": meta["description"],
+            "tags": [t.replace("#", "") for t in meta["hashtags"]],
+            "categoryId": meta["categoryId"],
+        },
+        "status": {
+            "privacyStatus": privacy,
+            "selfDeclaredMadeForKids": bool(meta["made_for_kids"]),
+            "containsSyntheticMedia": True,
+        },
+    }
+    media = MediaFileUpload(str(video_path), chunksize=-1, resumable=True)
+    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    response = None
+    while response is None:
+        status, response = request.next_chunk()
+        if status:
+            print(f"[+] Upload progress: {int(status.progress() * 100)}%")
+    video_id = response.get("id")
+    print(f"[✓] Uploaded cartoon episode {video_id} (privacy={privacy})")
+    if thumbnail_path and Path(thumbnail_path).is_file():
+        try:
+            youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(str(thumbnail_path)),
+            ).execute()
+        except Exception as e:
+            print(f"[!] Thumbnail upload skipped: {e}")
+    return video_id
+

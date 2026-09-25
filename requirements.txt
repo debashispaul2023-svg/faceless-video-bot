@@ -9,3 +9,6 @@ google-auth-oauthlib
 google-auth-httplib2
 google-api-python-client
 pytz
+# Cartoon pipeline: FFmpeg/ffprobe required on the host (not pip).
+# moviepy and google-genai are optional for `python main.py --demo`.
+# Do not add GPU-only packages.

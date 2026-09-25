@@ -4,14 +4,26 @@ import random
 import re
 import traceback
 from pathlib import Path
-import numpy as np
 from PIL import ImageFont, Image, ImageDraw
-from moviepy import (
-    VideoFileClip, AudioFileClip, ImageClip, TextClip, VideoClip, ColorClip,
-    CompositeVideoClip, CompositeAudioClip, concatenate_videoclips,
-    concatenate_audioclips, vfx, afx
-)
 import config
+
+try:
+    import numpy as np
+except Exception:  # pragma: no cover - optional for cartoon path
+    np = None
+
+try:
+    from moviepy import (
+        VideoFileClip, AudioFileClip, ImageClip, TextClip, VideoClip, ColorClip,
+        CompositeVideoClip, CompositeAudioClip, concatenate_videoclips,
+        concatenate_audioclips, vfx, afx
+    )
+except Exception:  # pragma: no cover - cartoon pipeline uses FFmpeg instead
+    VideoFileClip = AudioFileClip = ImageClip = TextClip = VideoClip = ColorClip = None
+    CompositeVideoClip = CompositeAudioClip = concatenate_videoclips = None
+    concatenate_audioclips = vfx = afx = None
+    print("[i] moviepy not installed — legacy shorts renderer disabled; cartoon FFmpeg path still works.")
+
 
 # moviepy>=2.0 REQUIRES an explicit font file path for TextClip — it will not
 # silently fall back to a system default. If no valid path is given, TextClip
@@ -973,6 +985,11 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
       - a plain list of image Paths (for backward compatibility).
     """
     print("[+] Assembling video with MoviePy (Ken Burns + crossfades + BGM + SFX + karaoke captions)...")
+    if CompositeVideoClip is None:
+        raise RuntimeError(
+            "moviepy is not installed. Install moviepy for the legacy shorts renderer, "
+            "or use the cartoon pipeline: python main.py --demo"
+        )
 
     assets = []
     for item in image_paths:
@@ -1252,3 +1269,19 @@ def render_final_video(image_paths: list, audio_path: Path, narration_text: str,
 
     print(f"[✓] Render completed: {output_path}")
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# Cartoon pipeline (1920x1080 16:9 @ 30fps) — FFmpeg scene renderer
+# Static stills get camera motion; this is not full AI character animation.
+# ---------------------------------------------------------------------------
+
+def render_cartoon_scene(scene, episode_dir, skip_done=True):
+    from cartoon_renderer import render_scene
+    return render_scene(scene, episode_dir, skip_done=skip_done)
+
+
+def render_cartoon_episode(plan, episode_dir, skip_done=True):
+    from cartoon_renderer import render_episode
+    return render_episode(plan, episode_dir, skip_done=skip_done)
+

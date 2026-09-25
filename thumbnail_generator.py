@@ -105,3 +105,65 @@ def generate_thumbnail(title: str, save_path: Path, seed_extra: str = "") -> boo
         print(f"[!] Thumbnail generation failed: {e}")
         traceback.print_exc()
         return False
+
+
+def generate_cartoon_thumbnail(plan, episode_dir, save_path=None):
+    """
+    1280x720 original cartoon thumbnail from episode title + main characters.
+    Prefers AI stills; falls back to compositing an existing scene visual.
+    """
+    from visual_providers import build_scene_prompt, generate_with_fallback
+
+    episode_dir = Path(episode_dir)
+    dest = Path(save_path or (episode_dir / "thumbnail.jpg"))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    width, height = config.THUMBNAIL_WIDTH, config.THUMBNAIL_HEIGHT
+
+    main_chars = list(plan.characters or [])[:3]
+    first = plan.scenes[0] if plan.scenes else None
+    prompt = plan.thumbnail_prompt or build_scene_prompt(
+        character_ids=main_chars,
+        environment=first.environment if first else "Sunny Grove hill",
+        action=first.action if first else "friends smiling at the camera",
+        camera="close heroic group shot",
+        style=plan.style,
+    )
+    prompt += ", thumbnail composition, faces large and readable, no text, no watermark"
+
+    raw = dest.with_name("thumbnail_raw.jpg")
+    try:
+        generate_with_fallback(prompt, raw, width, height, seed=abs(hash(plan.episode_id)) % 10**8)
+        img = Image.open(raw).convert("RGB").resize((width, height))
+    except Exception:
+        img = _fallback_from_scene(plan, episode_dir, width, height)
+
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw_o = ImageDraw.Draw(overlay)
+    draw_o.rectangle([0, int(height * 0.62), width, height], fill=(12, 40, 28, 170))
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype(_resolve_thumbnail_font(), 52)
+    title = (plan.title or config.SERIES_NAME).upper()
+    lines = _wrap_text(draw, title, font, width - 80)[:2]
+    y = height - 70 - 58 * len(lines)
+    for line in lines:
+        tw = draw.textlength(line, font=font)
+        x = (width - tw) / 2
+        for dx, dy in [(-3, 0), (3, 0), (0, -3), (0, 3), (-2, -2), (2, 2)]:
+            draw.text((x + dx, y + dy), line, font=font, fill="black")
+        draw.text((x, y), line, font=font, fill="#FFF4A3")
+        y += 58
+    img.save(dest, quality=93)
+    print(f"[+] Thumbnail: {dest}")
+    return dest
+
+
+def _fallback_from_scene(plan, episode_dir, width, height):
+    episode_dir = Path(episode_dir)
+    candidates = list(episode_dir.glob("scenes/*/visual.jpg"))
+    if candidates:
+        img = Image.open(candidates[0]).convert("RGB")
+        img = img.resize((width, height), Image.LANCZOS)
+        return img
+    return Image.new("RGB", (width, height), (70, 150, 110))
+

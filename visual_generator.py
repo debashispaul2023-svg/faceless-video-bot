@@ -5,10 +5,26 @@ import traceback
 import random
 from pathlib import Path
 import time
-from tenacity import retry, stop_after_attempt, wait_exponential
-from google import genai
-from google.genai import types
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential
+except Exception:
+    def retry(*args, **kwargs):
+        def deco(fn):
+            return fn
+        return deco
+    def stop_after_attempt(*args, **kwargs):
+        return None
+    def wait_exponential(*args, **kwargs):
+        return None
+
+try:
+    from google import genai
+    from google.genai import types
+except Exception:
+    genai = None
+    types = None
 import config
+
 
 # Pexels Free API Key. Get one free at https://www.pexels.com/api/
 # If it's not set, every scene silently skips straight to the AI fallback.
@@ -73,7 +89,7 @@ def _is_visually_relevant(image_bytes: bytes, scene_description: str) -> bool:
     global _relevance_check_quota_exhausted, _relevance_check_call_count
 
     api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or not image_bytes:
+    if not api_key or not image_bytes or genai is None:
         return True
 
     if _relevance_check_quota_exhausted:
@@ -343,3 +359,87 @@ def generate_visual_assets(visual_scenes: list) -> list:
             print(f"[!] Both stock and AI generation failed for scene {idx}, skipping this scene.")
 
     return assets
+
+
+# ---------------------------------------------------------------------------
+# Cartoon pipeline — character-consistent stills (or video if a provider can).
+# Does not replace generate_visual_assets() used by the legacy shorts path.
+# ---------------------------------------------------------------------------
+
+def generate_scene_visual(scene, episode_dir, provider_name=None):
+    """
+    Build a deterministic character-locked prompt and generate a still
+    (or a short video clip if the active provider supports it).
+
+    Returns the updated ScenePlan.
+    """
+    from visual_providers import (
+        build_scene_prompt,
+        cache_key_for_prompt,
+        generate_with_fallback,
+        get_visual_provider,
+    )
+
+    episode_dir = Path(episode_dir)
+    scene_dir = episode_dir / "scenes" / f"{scene.index:03d}"
+    scene_dir.mkdir(parents=True, exist_ok=True)
+
+    prompt = build_scene_prompt(
+        character_ids=list(scene.characters or []),
+        environment=scene.environment,
+        action=scene.action,
+        camera=scene.camera,
+        style=scene.style,
+    )
+    width, height = config.VIDEO_WIDTH, config.VIDEO_HEIGHT
+    key = cache_key_for_prompt(prompt, width, height)
+    cached = config.IMAGE_CACHE_DIR / f"{key}.jpg"
+    dest = scene_dir / "visual.jpg"
+
+    if cached.is_file() and cached.stat().st_size > 1024:
+        dest.write_bytes(cached.read_bytes())
+        scene.visual_path = str(dest)
+        scene.visual_type = "image"
+        print(f"[+] Reused cached visual for scene {scene.scene_id}")
+        return scene
+
+    provider = get_visual_provider(provider_name)
+    seed = abs(hash(scene.scene_id + prompt)) % (10 ** 8)
+    if provider.supports_video():
+        video_dest = scene_dir / "visual.mp4"
+        try:
+            result = provider.generate_video(prompt, video_dest, width, height, duration=max(4.0, scene.target_duration))
+            if result and Path(result).is_file():
+                scene.visual_path = str(result)
+                scene.visual_type = "video"
+                return scene
+        except Exception as e:
+            print(f"[!] Video generation unavailable ({e}); using still + camera move.")
+
+    generate_with_fallback(prompt, dest, width, height, seed=seed)
+    try:
+        cached.write_bytes(dest.read_bytes())
+    except Exception:
+        pass
+    scene.visual_path = str(dest)
+    scene.visual_type = "image"
+    print(f"[+] Scene visual ready: {dest}")
+    return scene
+
+
+def generate_episode_visuals(plan, episode_dir, skip_done=True):
+    """Generate visuals for every scene. Completed files are reused."""
+    from checkpoint import is_done, mark_done
+
+    for scene in plan.scenes:
+        flag = f"{scene.scene_id}_visual_done"
+        expected = Path(episode_dir) / "scenes" / f"{scene.index:03d}" / "visual.jpg"
+        if skip_done and is_done(plan.episode_id, flag) and expected.is_file():
+            scene.visual_path = str(expected)
+            scene.visual_type = "image"
+            print(f"[i] Skip visual {scene.scene_id} (checkpoint)")
+            continue
+        generate_scene_visual(scene, episode_dir)
+        mark_done(plan.episode_id, flag)
+    return plan
+

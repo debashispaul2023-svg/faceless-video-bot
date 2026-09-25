@@ -5,7 +5,10 @@ import asyncio
 import traceback
 from pathlib import Path
 import requests
-import edge_tts  # the PREVIOUS voiceover system — kept as the fallback if EVERY ElevenLabs key fails
+try:
+    import edge_tts  # fallback if every ElevenLabs key fails
+except Exception:
+    edge_tts = None
 import config
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -200,3 +203,70 @@ def generate_voiceover(text: str, output_filename: str = "voiceover.mp3") -> Pat
     _write_word_timings_sidecar(output_path, word_timings)
     print(f"[+] Voiceover generated at: {output_path}")
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# Cartoon pipeline — multi-character TTS
+# ---------------------------------------------------------------------------
+
+def generate_dialogue_line(line, dest_path):
+    """Fill a DialogueLine with audio path, duration, and timing metadata."""
+    from tts_providers import synthesize_line
+
+    dest = Path(dest_path)
+    result = synthesize_line(line.character_id, line.text, dest)
+    line.audio_path = str(result.path)
+    line.duration = float(result.duration or 0.0)
+    line.words = result.words or []
+    line.cache_key = Path(result.path).stem
+    sidecar = Path(result.path).with_suffix(".words.json")
+    if line.words and not sidecar.exists():
+        try:
+            sidecar.write_text(json.dumps(line.words))
+        except Exception:
+            pass
+    print(f"[+] TTS {line.character_id}: {line.duration:.2f}s -> {result.path}")
+    return line
+
+
+def scene_owner_id(episode_dir) -> str:
+    return Path(episode_dir).name
+
+
+def generate_scene_dialogue(scene, episode_dir, skip_done=True):
+    from checkpoint import is_done, mark_done
+    from media_utils import media_duration
+
+    episode_id = scene_owner_id(episode_dir)
+    scene_dir = Path(episode_dir) / "scenes" / f"{scene.index:03d}" / "audio"
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    flag = f"{scene.scene_id}_audio_done"
+    if skip_done and is_done(episode_id, flag):
+        for i, line in enumerate(scene.dialogue):
+            expected = scene_dir / f"line_{i:02d}_{line.character_id}.mp3"
+            if expected.is_file():
+                line.audio_path = str(expected)
+                line.duration = media_duration(expected) or line.duration
+        print(f"[i] Skip audio {scene.scene_id} (checkpoint)")
+        return scene
+
+    failures = []
+    for i, line in enumerate(scene.dialogue):
+        dest = scene_dir / f"line_{i:02d}_{line.character_id}.mp3"
+        try:
+            generate_dialogue_line(line, dest)
+        except Exception as e:
+            failures.append(f"{scene.scene_id} line {i}: {e}")
+            print(f"[!] Dialogue failed ({e}); episode can resume later.")
+    if not failures:
+        mark_done(episode_id, flag)
+    else:
+        print(f"[!] Audio incomplete for {scene.scene_id}: {failures}")
+    return scene
+
+
+def generate_episode_dialogue(plan, episode_dir, skip_done=True):
+    for scene in plan.scenes:
+        generate_scene_dialogue(scene, episode_dir, skip_done=skip_done)
+    return plan
+
