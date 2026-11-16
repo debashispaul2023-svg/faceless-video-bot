@@ -3,6 +3,7 @@
 
 Default path: original kids-cartoon pipeline.
 Legacy faceless-shorts path remains available via --legacy.
+New: --clip-url for YouTube stream clipping.
 """
 
 from __future__ import annotations
@@ -23,6 +24,12 @@ from thumbnail_generator import generate_cartoon_thumbnail
 from tts_engine import generate_episode_dialogue
 from video_renderer import render_cartoon_episode
 from visual_generator import generate_episode_visuals
+try:
+    from clipper import process_url
+except Exception:
+    def process_url(*a, **k):
+        print("[!] clipper not available")
+        return []
 try:
     from youtube_uploader import build_cartoon_metadata, upload_cartoon_episode
 except Exception:
@@ -97,7 +104,6 @@ def run_demo() -> Path:
     print("=" * 60)
     print("Sunny Grove Friends — DEMO (local assets, no paid APIs required)")
     print("=" * 60)
-    # Force local providers for a cheap orchestration test.
     config.STORY_PROVIDER = "local"
     config.VISUAL_PROVIDER = "local"
     config.TTS_PROVIDER = "local"
@@ -154,6 +160,8 @@ def parse_args(argv=None):
     p.add_argument("--legacy", action="store_true", help="Run the original faceless-shorts bot")
     p.add_argument("--self-test", action="store_true", help="Run lightweight failure-path tests")
     p.add_argument("--plan-only", action="store_true", help="Phase 1 only: idea → story → plan → validate")
+    p.add_argument("--clip-url", type=str, default=None, help="YouTube URL to analyze and clip")
+    p.add_argument("--max-clips", type=int, default=3, help="How many best clips to produce")
     return p.parse_args(argv)
 
 
@@ -197,6 +205,9 @@ def main(argv=None):
     try:
         if args.self_test:
             return self_test()
+        if args.clip_url:
+            process_url(args.clip_url, max_clips=args.max_clips, schedule=args.upload)
+            return 0
         if args.legacy:
             run_legacy_shorts()
             return 0
