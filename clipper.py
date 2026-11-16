@@ -70,19 +70,24 @@ def send_bot_alert_email(video_url: str, error_msg: str = "") -> bool:
         print(f"[!] Video URL: {video_url}")
         return False
 
-    subject = "[Clip Bot] YouTube bot verification required — bot is waiting"
-    body = f"""YouTube blocked the clipper with a bot check.
+    # Clean URL for display (remove tracking params if any)
+    clean_url = video_url.split("?")[0] if "?" in video_url else video_url
 
-Video URL (open and verify manually):
-{video_url}
+    subject = "[Clip Bot] VERIFY THIS LINK — bot is waiting"
+    body = f"""YouTube blocked the clipper. Bot is WAITING for you.
 
-The bot is currently WAITING and will retry automatically for about {WAIT_MINUTES} minutes.
-Please open the link, sign in if asked, and complete the verification as soon as possible.
+================================================
+  OPEN THIS LINK TO VERIFY:
+  {clean_url}
+================================================
 
-Error:
-{error_msg[:500]}
+Steps:
+1. Tap / open the link above
+2. Sign in if YouTube asks
+3. Complete the "not a bot" check
+4. The bot will automatically retry for {WAIT_MINUTES} minutes
 
-If the block does not lift, you may need to re-run the Action after verifying.
+Do not click any other links. Only the link between the lines is the verification link.
 """
     msg = MIMEText(body)
     msg["Subject"] = subject
