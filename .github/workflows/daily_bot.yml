@@ -76,7 +76,7 @@ jobs:
           MODE="${{ github.event.inputs.mode || 'clip' }}"
           URL="${{ github.event.inputs.video_url || '' }}"
           IDEA="${{ github.event.inputs.idea || '' }}"
-          MAX="${{ github.event.inputs.max_clips || '3' }}"
+          MAX="${{ github.event.inputs.max_clips || '10' }}"
           UPLOAD="${{ github.event.inputs.upload || 'true' }}"
 
           if [ "$MODE" = "clip" ]; then
