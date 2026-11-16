@@ -48,7 +48,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install ffmpeg and fonts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install ffmpeg, fonts and yt-dlp JS runtime deps
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
