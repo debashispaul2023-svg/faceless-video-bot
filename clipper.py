@@ -310,7 +310,8 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
     def _do():
         langs = _pick_langs()
         if not langs:
-            raise RuntimeError("video has no captions in any language")
+            print("[i] No YouTube captions available - will fall back to audio transcription")
+            return []
         opts = _ydl_opts(
             skip_download=True,
             writesubtitles=True,
@@ -339,6 +340,114 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
         return segments
 
     return run_extraction(url, _do, "download_transcript")
+
+
+# ---------------------------------------------------------------------------
+# Fallback: no captions -> download audio, transcribe with Gemini
+# ---------------------------------------------------------------------------
+AUDIO_CHUNK_SEC = 600
+MAX_AUDIO_MINUTES = int(os.getenv("MAX_AUDIO_MINUTES", "240"))
+TRANSCRIBE_MODEL = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-2.5-flash")
+
+
+def _parse_json_array(text: str) -> list:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text
+        text = text.rsplit("```", 1)[0]
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end == -1:
+        return []
+    return json.loads(text[start:end + 1])
+
+
+def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
+    """Download low-bitrate audio, split into chunks, transcribe each with Gemini."""
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        print("[!] GEMINI_API_KEY missing - cannot transcribe audio")
+        return []
+
+    src_tmpl = workdir / "audio_src"
+
+    def _dl():
+        opts = _ydl_opts(format="bestaudio/best", outtmpl=str(src_tmpl) + ".%(ext)s")
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+
+    try:
+        print("[i] Downloading audio for transcription...")
+        run_extraction(url, _dl, "download_audio")
+    except Exception as e:
+        print(f"[!] Audio download failed: {e}")
+        return []
+
+    srcs = [p for p in workdir.glob("audio_src.*")]
+    if not srcs:
+        print("[!] Audio file not found after download")
+        return []
+    src = srcs[0]
+
+    for old in workdir.glob("chunk_*.mp3"):
+        old.unlink()
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+             "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k",
+             "-t", str(MAX_AUDIO_MINUTES * 60),
+             "-f", "segment", "-segment_time", str(AUDIO_CHUNK_SEC),
+             str(workdir / "chunk_%03d.mp3")],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"[!] ffmpeg split failed: {(e.stderr or '')[-400:]}")
+        return []
+    finally:
+        try:
+            src.unlink()
+        except OSError:
+            pass
+
+    chunks = sorted(workdir.glob("chunk_*.mp3"))
+    print(f"[i] Transcribing {len(chunks)} audio chunks with {TRANSCRIBE_MODEL}")
+    client = genai.Client(api_key=api_key)
+    segments: list[dict] = []
+
+    prompt = (
+        "Transcribe this audio (a GTA gameplay stream; speech may be Hindi, English or mixed). "
+        "Return ONLY a JSON array. Each item: {\"start\": seconds_from_start_of_this_audio (number), "
+        "\"end\": seconds (number), \"text\": \"what was said\"}. "
+        "Use segments of roughly 5-15 seconds. Also include short notes in [brackets] for loud "
+        "events (crash, siren, gunfire, shouting). Keep original language; Hindi in Roman script is fine."
+    )
+    for idx, chunk in enumerate(chunks):
+        offset = idx * AUDIO_CHUNK_SEC
+        for attempt in range(3):
+            try:
+                up = client.files.upload(file=str(chunk))
+                resp = client.models.generate_content(model=TRANSCRIBE_MODEL, contents=[prompt, up])
+                try:
+                    client.files.delete(name=up.name)
+                except Exception:
+                    pass
+                for it in _parse_json_array(resp.text):
+                    txt = str(it.get("text", "")).strip()
+                    if txt:
+                        segments.append({
+                            "start": offset + float(it.get("start", 0)),
+                            "end": offset + float(it.get("end", it.get("start", 0))),
+                            "text": txt,
+                        })
+                break
+            except Exception as e:
+                print(f"[!] chunk {idx + 1}/{len(chunks)} attempt {attempt + 1} failed: {e}")
+                time.sleep(10 * (attempt + 1))
+        chunk.unlink(missing_ok=True)
+        time.sleep(2)
+
+    print(f"[+] Audio transcription produced {len(segments)} segments")
+    return segments
+
 
 
 def download_segment(url: str, start: float, end: float, out_path: Path) -> bool:
@@ -719,7 +828,10 @@ def process_url(url: str, max_clips: int = 10, schedule: bool = True) -> list[Pa
         return []
 
     if not transcript:
-        print("[!] No transcript/subtitles available for this video.")
+        print("[i] No captions - trying audio transcription fallback")
+        transcript = transcribe_audio_with_gemini(url, workdir)
+    if not transcript:
+        print("[!] No transcript available (captions and audio fallback both failed).")
         return []
 
     duration_h = (transcript[-1]["end"] - transcript[0]["start"]) / 3600.0
