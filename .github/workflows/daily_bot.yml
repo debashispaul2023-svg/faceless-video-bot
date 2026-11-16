@@ -27,11 +27,12 @@ on:
         default: true
         type: boolean
       max_clips:
-        description: "How many best clips to produce"
+        description: "How many best clips to produce (clip mode)"
         required: false
-        default: "3"
+        default: "10"
   schedule:
-    # Optional daily check; clip mode needs a URL so mainly manual
+    # Cron does not supply video_url — clip mode will skip cleanly.
+    # Use workflow_dispatch for clipping.
     - cron: "0 8 * * *"
 
 jobs:
@@ -52,13 +53,38 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install ffmpeg, fonts and yt-dlp JS runtime deps
+      - name: Install Deno (yt-dlp JS challenge runtime)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install system packages (ffmpeg, fonts)
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Install Python packages
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -c "import yt_dlp; print('yt-dlp', yt_dlp.version.__version__)"
+          deno --version
+          ffmpeg -version | head -1
+
+      # Optional Netscape cookies for restricted extracts (NOT OAuth).
+      # Never echo secret contents.
+      - name: Prepare YouTube cookies file
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          if [ -n "${YOUTUBE_COOKIES}" ]; then
+            printf '%s\n' "$YOUTUBE_COOKIES" > cookies.txt
+            chmod 600 cookies.txt
+            BYTES=$(wc -c < cookies.txt | tr -d ' ')
+            echo "[+] cookies.txt prepared (${BYTES} bytes) — contents not logged"
+          else
+            echo "[i] secrets.YOUTUBE_COOKIES empty — public extraction only"
+          fi
 
       - name: Run pipeline
         env:
@@ -66,22 +92,37 @@ jobs:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-          AUTO_UPLOAD: "${{ github.event.inputs.upload || 'true' }}"
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          YOUTUBE_COOKIES_FILE: cookies.txt
+          # GITHUB_* provided by Actions for diagnostic email run URL
         run: |
+          set -e
           MODE="${{ github.event.inputs.mode || 'clip' }}"
           URL="${{ github.event.inputs.video_url || '' }}"
           IDEA="${{ github.event.inputs.idea || '' }}"
           MAX="${{ github.event.inputs.max_clips || '10' }}"
-          UPLOAD="${{ github.event.inputs.upload || 'true' }}"
+          # workflow_dispatch boolean may be string; schedule has no inputs
+          UPLOAD_RAW="${{ github.event.inputs.upload }}"
+          if [ -z "$UPLOAD_RAW" ] || [ "$UPLOAD_RAW" = "true" ]; then
+            UPLOAD="true"
+          else
+            UPLOAD="false"
+          fi
+          export AUTO_UPLOAD="$UPLOAD"
+
+          echo "[i] mode=$MODE upload=$UPLOAD max_clips=$MAX"
+          if [ -f cookies.txt ]; then
+            export YOUTUBE_COOKIES_FILE="$PWD/cookies.txt"
+            echo "[i] cookiefile path set (not printing contents)"
+          fi
 
           if [ "$MODE" = "clip" ]; then
             if [ -z "$URL" ]; then
-              echo "No video_url provided for clip mode. Skipping."
+              echo "No video_url for clip mode (cron or empty input). Skipping successfully."
               exit 0
             fi
             if [ "$UPLOAD" = "true" ]; then
@@ -101,7 +142,7 @@ jobs:
             fi
           fi
 
-      - name: Upload produced clips
+      - name: Upload produced clips artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
