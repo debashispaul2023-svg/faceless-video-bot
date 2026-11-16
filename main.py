@@ -206,7 +206,10 @@ def main(argv=None):
         if args.self_test:
             return self_test()
         if args.clip_url:
-            process_url(args.clip_url, max_clips=args.max_clips, schedule=args.upload)
+            produced = process_url(args.clip_url, max_clips=args.max_clips, schedule=args.upload)
+            if not produced:
+                print("[!] No clips produced - failing the job so this is not reported as success")
+                return 1
             return 0
         if args.legacy:
             run_legacy_shorts()

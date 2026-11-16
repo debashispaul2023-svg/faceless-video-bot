@@ -33,10 +33,13 @@ YDL_BASE = {
     "no_warnings": False,
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "web"],
-            "skip": ["dash", "hls"],
+            # "android" now needs a PO token and is blocked from datacenter IPs.
+            # With cookies, tv/web_safari/mweb are the clients that still work.
+            "player_client": ["tv", "web_safari", "mweb"],
         }
     },
+    # Let yt-dlp fetch its JS challenge solver (Deno is installed in the workflow)
+    "remote_components": ["ejs:github"],
     "retries": 3,
     "fragment_retries": 3,
     "sleep_interval": 1,
