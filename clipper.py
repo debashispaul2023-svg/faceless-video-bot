@@ -3,12 +3,16 @@
 
 Paste a YouTube URL → download transcript → AI picks best moments →
 ffmpeg edit (9:16 + zoom + captions) → schedule 1 short/day on YouTube.
+
+When YouTube shows bot verification, emails the link so it can be manually verified.
 """
 from __future__ import annotations
 
 import json
 import os
+import smtplib
 import subprocess
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import yt_dlp
@@ -34,6 +38,61 @@ YDL_BASE = {
 }
 
 
+def is_bot_error(err: Exception | str) -> bool:
+    text = str(err).lower()
+    return any(k in text for k in [
+        "sign in to confirm",
+        "not a bot",
+        "bot detection",
+        "confirm you’re not a bot",
+        "confirm you're not a bot",
+        "http error 429",
+        "too many requests",
+    ])
+
+
+def send_bot_alert_email(video_url: str, error_msg: str = "") -> bool:
+    """Email the video URL when YouTube requires manual bot verification."""
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER", "")
+    smtp_pass = os.getenv("SMTP_PASS", "")
+    to_email = os.getenv("ALERT_EMAIL", "")
+
+    if not (smtp_user and smtp_pass and to_email):
+        print("[!] Bot verification needed, but SMTP credentials not set. Cannot send email.")
+        print(f"[!] Video URL: {video_url}")
+        return False
+
+    subject = "[Clip Bot] YouTube bot verification required"
+    body = f"""YouTube blocked the clipper with a bot check.
+
+Video URL (open and verify manually):
+{video_url}
+
+Error:
+{error_msg[:500]}
+
+After you verify in the browser, re-run the GitHub Action with the same URL.
+"""
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = smtp_user
+    msg["To"] = to_email
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, [to_email], msg.as_string())
+        print(f"[+] Bot verification alert emailed to {to_email}")
+        return True
+    except Exception as e:
+        print(f"[!] Failed to send email: {e}")
+        print(f"[!] Video URL: {video_url}")
+        return False
+
+
 def get_video_id(url: str) -> str:
     opts = {**YDL_BASE, "skip_download": True}
     try:
@@ -42,6 +101,8 @@ def get_video_id(url: str) -> str:
             return info.get("id") or "unknown"
     except Exception as e:
         print(f"[!] get_video_id failed: {e}")
+        if is_bot_error(e):
+            send_bot_alert_email(url, str(e))
         # fallback: extract from URL
         if "v=" in url:
             return url.split("v=")[1].split("&")[0][:11]
@@ -66,6 +127,8 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
             ydl.download([url])
     except Exception as e:
         print(f"[!] Transcript download failed: {e}")
+        if is_bot_error(e):
+            send_bot_alert_email(url, str(e))
         return []
     for p in workdir.glob("*.json3"):
         try:
@@ -141,6 +204,8 @@ def download_segment(url: str, start: float, end: float, out_path: Path) -> bool
         return out_path.exists()
     except Exception as e:
         print(f"[!] Segment download failed: {e}")
+        if is_bot_error(e):
+            send_bot_alert_email(url, str(e))
         return False
 
 
