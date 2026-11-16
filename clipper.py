@@ -18,16 +18,42 @@ import config
 from youtube_uploader import find_next_available_slots, schedule_video_upload
 
 
+YDL_BASE = {
+    "quiet": True,
+    "no_warnings": False,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web", "ios", "mweb"],
+            "skip": ["dash", "hls"],
+        }
+    },
+    "retries": 5,
+    "fragment_retries": 5,
+    "sleep_interval": 1,
+    "max_sleep_interval": 5,
+}
+
+
 def get_video_id(url: str) -> str:
-    with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return info.get("id") or "unknown"
+    opts = {**YDL_BASE, "skip_download": True}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info.get("id") or "unknown"
+    except Exception as e:
+        print(f"[!] get_video_id failed: {e}")
+        # fallback: extract from URL
+        if "v=" in url:
+            return url.split("v=")[1].split("&")[0][:11]
+        if "/live/" in url:
+            return url.split("/live/")[1].split("?")[0][:11]
+        return "unknown"
 
 
 def download_transcript(url: str, workdir: Path) -> list[dict]:
     """Get auto/manual English subtitles as list of {start, end, text}."""
     opts = {
-        "quiet": True,
+        **YDL_BASE,
         "skip_download": True,
         "writesubtitles": True,
         "writeautomaticsub": True,
@@ -35,21 +61,28 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
         "subtitlesformat": "json3",
         "outtmpl": str(workdir / "%(id)s"),
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+    except Exception as e:
+        print(f"[!] Transcript download failed: {e}")
+        return []
     for p in workdir.glob("*.json3"):
-        data = json.loads(p.read_text())
-        events = data.get("events") or []
-        segments = []
-        for ev in events:
-            if "segs" not in ev:
-                continue
-            start = ev.get("tStartMs", 0) / 1000.0
-            dur = ev.get("dDurationMs", 0) / 1000.0
-            text = "".join(s.get("utf8", "") for s in ev.get("segs", [])).strip()
-            if text:
-                segments.append({"start": start, "end": start + dur, "text": text})
-        return segments
+        try:
+            data = json.loads(p.read_text())
+            events = data.get("events") or []
+            segments = []
+            for ev in events:
+                if "segs" not in ev:
+                    continue
+                start = ev.get("tStartMs", 0) / 1000.0
+                dur = ev.get("dDurationMs", 0) / 1000.0
+                text = "".join(s.get("utf8", "") for s in ev.get("segs", [])).strip()
+                if text:
+                    segments.append({"start": start, "end": start + dur, "text": text})
+            return segments
+        except Exception:
+            continue
     return []
 
 
@@ -97,10 +130,10 @@ Transcript:
 def download_segment(url: str, start: float, end: float, out_path: Path) -> bool:
     section = f"*{start}-{end}"
     opts = {
+        **YDL_BASE,
         "format": "bestvideo[height<=1080]+bestaudio/best",
         "outtmpl": str(out_path),
         "download_sections": [section],
-        "quiet": True,
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -141,13 +174,14 @@ def edit_clip(src: Path, dest: Path, captions: list[dict], zoom: bool = True) ->
 
 
 def process_url(url: str, max_clips: int = 3, schedule: bool = True) -> list[Path]:
-    workdir = config.OUTPUT_DIR / "clips" / get_video_id(url)
+    vid = get_video_id(url)
+    workdir = config.OUTPUT_DIR / "clips" / vid
     workdir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[+] Analyzing {url}")
+    print(f"[+] Analyzing {url} (id={vid})")
     transcript = download_transcript(url, workdir)
     if not transcript:
-        print("[!] No transcript available.")
+        print("[!] No transcript available. Video may be blocked or have no captions.")
         return []
 
     clips = pick_best_clips(transcript, max_clips=max_clips)
