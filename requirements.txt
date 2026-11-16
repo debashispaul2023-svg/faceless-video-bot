@@ -9,5 +9,5 @@ google-auth-oauthlib
 google-auth-httplib2
 google-api-python-client
 pytz
-yt-dlp
-# ffmpeg required on host
+yt-dlp>=2024.8.0
+# Host: ffmpeg, Deno (for yt-dlp JS challenges on Actions)

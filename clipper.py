@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """YouTube stream/VOD clipper for faceless-video-bot.
 
-Paste a YouTube URL → download transcript → AI picks best moments →
-ffmpeg edit (9:16 + zoom + captions) → schedule 1 short/day on YouTube.
+Flow: URL → transcript → AI picks moments → FFmpeg edit → optional schedule.
 
-When YouTube shows bot verification, emails the link and waits/retries
-so the job can continue after manual verification if the block lifts.
-
-Supports cookies via YOUTUBE_COOKIES_FILE (path) or YOUTUBE_COOKIES
-(secret content) so GitHub Actions runners can bypass "confirm you're
-not a bot" / 429 blocks.
+Extraction (yt-dlp) is separate from upload OAuth.
+Cookies (optional) help some restricted extracts; they are never logged.
+Bot challenges and HTTP 429 fail fast — no multi-minute wait loops.
 """
 from __future__ import annotations
 
@@ -29,47 +25,63 @@ import config
 from youtube_uploader import find_next_available_slots, schedule_video_upload
 
 
+# ---------------------------------------------------------------------------
+# yt-dlp base options (no secrets)
+# ---------------------------------------------------------------------------
 YDL_BASE = {
     "quiet": True,
     "no_warnings": False,
     "extractor_args": {
         "youtube": {
-            # Prefer android/web; ios/mweb sometimes trigger harder checks
             "player_client": ["android", "web"],
             "skip": ["dash", "hls"],
         }
     },
-    "retries": 8,
-    "fragment_retries": 8,
-    "sleep_interval": 2,
-    "max_sleep_interval": 10,
-    # Reduce chance of hammering the same endpoint
+    "retries": 3,
+    "fragment_retries": 3,
+    "sleep_interval": 1,
+    "max_sleep_interval": 5,
     "sleep_interval_requests": 1,
 }
 
-# How long the bot waits and retries after sending the verification email
-WAIT_MINUTES = int(os.getenv("BOT_WAIT_MINUTES", "8"))
-RETRY_INTERVAL_SEC = 60
+# Network-only retries (NOT used for bot/429)
+NETWORK_RETRIES = 2
+NETWORK_BACKOFF_SEC = 3
 
-# For very long streams (12–16h) we cannot dump the entire transcript into Gemini.
-# We sample windows across the whole duration.
+# Long-stream AI sampling
 MAX_TRANSCRIPT_CHARS_FOR_AI = 90_000
-WINDOW_SECONDS = 25 * 60          # ~25 min windows
-WINDOWS_TO_SAMPLE = 12            # cover a 12–16h stream reasonably
+WINDOW_SECONDS = 25 * 60
+WINDOWS_TO_SAMPLE = 12
+
+# One diagnostic email per process/run
+_DIAGNOSTIC_EMAIL_SENT = False
 
 
+class ExtractionAuthError(RuntimeError):
+    """YouTube requires sign-in / bot check — not recoverable in CI without valid cookies."""
+
+
+class ExtractionRateLimitError(RuntimeError):
+    """HTTP 429 from YouTube — stop hammering."""
+
+
+class ExtractionNetworkError(RuntimeError):
+    """Transient network failure — limited retries allowed."""
+
+
+# ---------------------------------------------------------------------------
+# Cookie handling (never log contents)
+# ---------------------------------------------------------------------------
 def _resolve_cookiefile() -> str | None:
-    """Return a path to a Netscape cookies file, or None."""
+    """Return path to a Netscape cookies file, or None. Does not print secrets."""
     path = os.getenv("YOUTUBE_COOKIES_FILE", "").strip()
     if path and Path(path).is_file():
         return path
 
-    # Secret may contain the full cookies.txt content
     content = os.getenv("YOUTUBE_COOKIES", "").strip()
     if not content:
         return None
 
-    # Write once per process into a temp file (Actions runners are ephemeral)
     tmp = Path(tempfile.gettempdir()) / "yt_cookies_actions.txt"
     if not tmp.exists() or tmp.stat().st_size == 0:
         tmp.write_text(content, encoding="utf-8")
@@ -85,26 +97,53 @@ def _ydl_opts(**extra) -> dict:
     cookiefile = _resolve_cookiefile()
     if cookiefile:
         opts["cookiefile"] = cookiefile
-        print(f"[i] Using YouTube cookies from {cookiefile}")
+        # Do not print path content or cookie values
+        print("[i] YouTube cookiefile is configured (contents not logged)")
+    else:
+        print("[i] No YouTube cookiefile — public extracts only; restricted videos may fail")
     return opts
 
 
-def is_bot_error(err: Exception | str) -> bool:
+# ---------------------------------------------------------------------------
+# Error classification
+# ---------------------------------------------------------------------------
+def classify_extraction_error(err: Exception | str) -> str:
     text = str(err).lower()
-    return any(k in text for k in [
+    if any(k in text for k in (
         "sign in to confirm",
         "not a bot",
         "bot detection",
-        "confirm you’re not a bot",
         "confirm you're not a bot",
-        "http error 429",
-        "too many requests",
+        "confirm you’re not a bot",
         "confirm you are not a bot",
-    ])
+        "login required",
+    )):
+        return "auth"
+    if any(k in text for k in ("http error 429", "too many requests", "rate limit")):
+        return "rate_limit"
+    if any(k in text for k in (
+        "timed out", "timeout", "connection reset", "temporary failure",
+        "network is unreachable", "name or service not known",
+        "ssl", "errno 104", "errno 110",
+    )):
+        return "network"
+    return "other"
 
 
-def send_bot_alert_email(video_url: str, error_msg: str = "") -> bool:
-    """Email the video URL when YouTube requires manual bot verification."""
+def is_bot_error(err: Exception | str) -> bool:
+    return classify_extraction_error(err) in ("auth", "rate_limit")
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic email (max one per process)
+# ---------------------------------------------------------------------------
+def send_diagnostic_email(video_url: str, error_msg: str, kind: str = "extraction") -> bool:
+    """Send at most one diagnostic alert per workflow run. No secrets in body."""
+    global _DIAGNOSTIC_EMAIL_SENT
+    if _DIAGNOSTIC_EMAIL_SENT:
+        print("[i] Diagnostic email already sent this run — skipping duplicate")
+        return False
+
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))
     smtp_user = os.getenv("SMTP_USER", "")
@@ -112,31 +151,40 @@ def send_bot_alert_email(video_url: str, error_msg: str = "") -> bool:
     to_email = os.getenv("ALERT_EMAIL", "")
 
     if not (smtp_user and smtp_pass and to_email):
-        print("[!] Bot verification needed, but SMTP credentials not set. Cannot send email.")
-        print(f"[!] Video URL: {video_url}")
+        print("[!] SMTP not configured — diagnostic email skipped")
+        print(f"[!] Error kind={kind} url={video_url}")
         return False
 
-    clean_url = video_url.split("?")[0] if "?" in video_url else video_url
+    run_url = os.getenv("GITHUB_SERVER_URL", "https://github.com")
+    repo = os.getenv("GITHUB_REPOSITORY", "")
+    run_id = os.getenv("GITHUB_RUN_ID", "")
+    actions_url = f"{run_url}/{repo}/actions/runs/{run_id}" if repo and run_id else "(run URL unavailable)"
 
-    subject = "[Clip Bot] VERIFY THIS LINK — bot is waiting"
-    body = f"""YouTube blocked the clipper. Bot is WAITING for you.
+    # Sanitize error — never include cookie-like blobs
+    safe_err = str(error_msg)[:800]
+    for bad in ("cookie", "password", "token", "secret", "refresh"):
+        if bad in safe_err.lower():
+            safe_err = "[redacted error detail]"
+            break
 
-================================================
-  OPEN THIS LINK TO VERIFY:
-  {clean_url}
-================================================
+    subject = f"[Clip Bot] Extraction failed ({kind})"
+    body = f"""Clip bot extraction failed in GitHub Actions.
 
-Steps:
-1. Tap / open the link above
-2. Sign in if YouTube asks
-3. Complete the "not a bot" check
-4. The bot will automatically retry for {WAIT_MINUTES} minutes
+Video URL: {video_url}
+Error type: {kind}
+Error (truncated): {safe_err}
 
-NOTE: Verifying in your browser does NOT always unblock the GitHub Actions
-IP. The proper long-term fix is to put YouTube cookies into the
-YOUTUBE_COOKIES secret (see README / previous messages).
+GitHub Actions run:
+{actions_url}
 
-Do not click any other links. Only the link between the lines is the verification link.
+Notes:
+- Opening the video in your phone/browser does NOT authenticate the Actions runner.
+- OAuth Client ID / refresh token are for UPLOAD only; they do not fix yt-dlp extraction.
+- Optional: set secret YOUTUBE_COOKIES (Netscape cookies.txt) for restricted extracts.
+- Cookies expire; refresh them if extracts start failing again.
+- HTTP 429 / bot challenges: the job stops immediately (no multi-minute retry loop).
+
+This is a single diagnostic message for this run.
 """
     msg = MIMEText(body)
     msg["Subject"] = subject
@@ -148,40 +196,68 @@ Do not click any other links. Only the link between the lines is the verificatio
             server.starttls()
             server.login(smtp_user, smtp_pass)
             server.sendmail(smtp_user, [to_email], msg.as_string())
-        print(f"[+] Bot verification alert emailed to {to_email}")
+        _DIAGNOSTIC_EMAIL_SENT = True
+        print(f"[+] Diagnostic email sent to configured ALERT_EMAIL")
         return True
     except Exception as e:
-        print(f"[!] Failed to send email: {e}")
-        print(f"[!] Video URL: {video_url}")
+        print(f"[!] Failed to send diagnostic email: {e}")
         return False
 
 
-def wait_and_retry_on_bot(url: str, attempt_fn, description: str = "operation"):
-    """
-    Try `attempt_fn()`. If bot error, email once, then wait and retry for WAIT_MINUTES.
-    Returns the successful result or raises the last error.
-    """
-    emailed = False
-    deadline = time.time() + WAIT_MINUTES * 60
-    last_err = None
+# Back-compat name used nowhere critical
+def send_bot_alert_email(video_url: str, error_msg: str = "") -> bool:
+    return send_diagnostic_email(video_url, error_msg, kind="auth")
 
-    while True:
+
+# ---------------------------------------------------------------------------
+# Retry: network only; auth/429 fail immediately
+# ---------------------------------------------------------------------------
+def run_extraction(url: str, attempt_fn, description: str = "operation"):
+    """
+    Run attempt_fn with limited network retries.
+    On auth or rate-limit: one diagnostic email, then raise — no wait loop.
+    """
+    last_err: Exception | None = None
+    for attempt in range(NETWORK_RETRIES + 1):
         try:
             return attempt_fn()
         except Exception as e:
             last_err = e
-            if not is_bot_error(e):
-                raise
-            print(f"[!] Bot check during {description}: {e}")
-            if not emailed:
-                send_bot_alert_email(url, str(e))
-                emailed = True
-                print(f"[+] Bot is waiting up to {WAIT_MINUTES} minutes for verification...")
-            if time.time() >= deadline:
-                print("[!] Wait time expired. Still blocked.")
-                raise
-            print(f"[i] Retrying {description} in {RETRY_INTERVAL_SEC}s...")
-            time.sleep(RETRY_INTERVAL_SEC)
+            kind = classify_extraction_error(e)
+            print(f"[!] {description} failed ({kind}): {e}")
+
+            if kind == "auth":
+                send_diagnostic_email(url, str(e), kind="auth")
+                raise ExtractionAuthError(str(e)) from e
+            if kind == "rate_limit":
+                send_diagnostic_email(url, str(e), kind="rate_limit")
+                raise ExtractionRateLimitError(str(e)) from e
+            if kind == "network" and attempt < NETWORK_RETRIES:
+                delay = NETWORK_BACKOFF_SEC * (attempt + 1)
+                print(f"[i] Network error — retry {attempt + 1}/{NETWORK_RETRIES} in {delay}s")
+                time.sleep(delay)
+                continue
+            # other / exhausted network
+            if kind == "network":
+                send_diagnostic_email(url, str(e), kind="network")
+                raise ExtractionNetworkError(str(e)) from e
+            raise
+
+    assert last_err is not None
+    raise last_err
+
+
+# ---------------------------------------------------------------------------
+# Extraction helpers
+# ---------------------------------------------------------------------------
+def extract_id_from_url(url: str) -> str:
+    if "v=" in url:
+        return url.split("v=")[1].split("&")[0][:11]
+    if "/live/" in url:
+        return url.split("/live/")[1].split("?")[0][:11]
+    if "youtu.be/" in url:
+        return url.split("youtu.be/")[1].split("?")[0][:11]
+    return "unknown"
 
 
 def get_video_id(url: str) -> str:
@@ -189,24 +265,23 @@ def get_video_id(url: str) -> str:
         opts = _ydl_opts(skip_download=True)
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return info.get("id") or "unknown"
+            return info.get("id") or extract_id_from_url(url)
 
     try:
-        return wait_and_retry_on_bot(url, _do, "get_video_id")
+        return run_extraction(url, _do, "get_video_id")
+    except (ExtractionAuthError, ExtractionRateLimitError):
+        # Still return URL-parsed id for logging/workdir; caller must not pretend extract worked
+        vid = extract_id_from_url(url)
+        print(f"[!] Using URL-parsed id={vid}; metadata extract failed")
+        return vid
     except Exception as e:
         print(f"[!] get_video_id failed: {e}")
-        # fallback: extract from URL
-        if "v=" in url:
-            return url.split("v=")[1].split("&")[0][:11]
-        if "/live/" in url:
-            return url.split("/live/")[1].split("?")[0][:11]
-        if "youtu.be/" in url:
-            return url.split("youtu.be/")[1].split("?")[0][:11]
-        return "unknown"
+        return extract_id_from_url(url)
 
 
 def download_transcript(url: str, workdir: Path) -> list[dict]:
-    """Get auto/manual English (or Hindi) subtitles as list of {start, end, text}."""
+    """Download subtitles as list of {start, end, text}. Raises on auth/429."""
+
     def _do():
         opts = _ydl_opts(
             skip_download=True,
@@ -223,8 +298,7 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
         for p in sorted(workdir.glob("*.json3")):
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
-                events = data.get("events") or []
-                for ev in events:
+                for ev in data.get("events") or []:
                     if "segs" not in ev:
                         continue
                     start = ev.get("tStartMs", 0) / 1000.0
@@ -234,37 +308,56 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
                         segments.append({"start": start, "end": start + dur, "text": text})
             except Exception as e:
                 print(f"[!] Failed parsing subtitle file {p.name}: {e}")
-                continue
         return segments
 
+    return run_extraction(url, _do, "download_transcript")
+
+
+def download_segment(url: str, start: float, end: float, out_path: Path) -> bool:
+    section = f"*{start}-{end}"
+
+    def _do():
+        opts = _ydl_opts(
+            format="bestvideo[height<=1080]+bestaudio/best",
+            outtmpl=str(out_path.with_suffix("")),
+            download_sections=[section],
+            merge_output_format="mp4",
+        )
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+        if out_path.exists():
+            return True
+        for cand in out_path.parent.glob(out_path.stem + ".*"):
+            if cand.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
+                cand.rename(out_path)
+                return True
+        raise RuntimeError("segment file not created")
+
     try:
-        return wait_and_retry_on_bot(url, _do, "download_transcript")
+        return run_extraction(url, _do, "download_segment")
+    except (ExtractionAuthError, ExtractionRateLimitError, ExtractionNetworkError) as e:
+        print(f"[!] Segment download stopped: {e}")
+        return False
     except Exception as e:
-        print(f"[!] Transcript download failed: {e}")
-        return []
+        print(f"[!] Segment download failed: {e}")
+        return False
 
 
+# ---------------------------------------------------------------------------
+# AI clip selection
+# ---------------------------------------------------------------------------
 def _sample_transcript_for_ai(transcript: list[dict], max_chars: int = MAX_TRANSCRIPT_CHARS_FOR_AI) -> str:
-    """
-    For 12–16 hour streams the full transcript is too large for the model.
-    Sample evenly spaced windows across the whole duration so we don't only
-    look at the first ~20–30 minutes.
-    """
     if not transcript:
         return ""
-
     total_duration = transcript[-1]["end"] - transcript[0]["start"]
-    if total_duration < 90 * 60:  # under ~1.5h → just take everything (truncated)
+    if total_duration < 90 * 60:
         lines = [f"{s['start']:.1f}-{s['end']:.1f}: {s['text']}" for s in transcript]
-        text = "\n".join(lines)
-        return text[:max_chars]
+        return "\n".join(lines)[:max_chars]
 
-    # Long stream: take WINDOWS_TO_SAMPLE windows of WINDOW_SECONDS each
     window = WINDOW_SECONDS
     n_windows = min(WINDOWS_TO_SAMPLE, max(4, int(total_duration // window)))
     step = total_duration / n_windows
     start0 = transcript[0]["start"]
-
     selected: list[dict] = []
     for i in range(n_windows):
         w_start = start0 + i * step
@@ -275,8 +368,6 @@ def _sample_transcript_for_ai(transcript: list[dict], max_chars: int = MAX_TRANS
             if s["start"] > w_end:
                 break
             selected.append(s)
-
-    # Deduplicate while preserving order
     seen = set()
     unique = []
     for s in selected:
@@ -284,71 +375,57 @@ def _sample_transcript_for_ai(transcript: list[dict], max_chars: int = MAX_TRANS
         if key not in seen:
             seen.add(key)
             unique.append(s)
-
     lines = [f"{s['start']:.1f}-{s['end']:.1f}: {s['text']}" for s in unique]
     text = "\n".join(lines)
     if len(text) > max_chars:
-        # Keep beginning + end of the sampled text so both early and late moments remain
         half = max_chars // 2
         text = text[:half] + "\n...[middle truncated]...\n" + text[-half:]
     return text
 
 
 def pick_best_clips(transcript: list[dict], video_title: str = "stream", max_clips: int = 10) -> list[dict]:
-    """Use Gemini to select best short moments for GTA 6 viral Shorts.
-    Handles 12–16 hour streams by sampling across the whole duration.
-    Default target: 10+ clips from one long stream.
-    """
     if not transcript:
         return []
-
     sampled = _sample_transcript_for_ai(transcript)
     if not sampled.strip():
         return []
-
     duration_h = (transcript[-1]["end"] - transcript[0]["start"]) / 3600.0
     print(f"[i] Transcript spans ~{duration_h:.1f}h, sending sampled text ({len(sampled)} chars) to AI")
 
     prompt = f"""You are an expert GTA 6 / Grand Theft Auto VI YouTube Shorts editor and viral clipper.
 From this transcript of a stream titled "{video_title}" (approx {duration_h:.1f} hours long), pick the {max_clips} BEST moments for viral YouTube Shorts.
 
-Prioritize these GTA 6 moment types (highest priority first):
-1. Police chases / wanted level chaos / escapes that almost fail
-2. Epic crashes, stunts, jumps, or ragdoll fails
-3. Funny NPC interactions, random events, or unexpected reactions
-4. Heist / mission tension with clear payoff (success or spectacular fail)
-5. Streamer high-energy reaction + the action that caused it
-6. "Wait you can do that?" discovery / new feature moments
-7. Clean skillful plays (drifting, shooting, driving)
+Prioritize:
+1. Police chases / wanted chaos
+2. Epic crashes, stunts, ragdoll fails
+3. Funny NPC / unexpected reactions
+4. Heist / mission tension with payoff
+5. Streamer reaction + action
+6. Discovery / "wait you can do that" moments
+7. Skillful driving/shooting
 
-Hard rules for viral Shorts (2026):
-- Each clip 15–45 seconds (sweet spot 25–40s). Must have a clear HOOK in the first 1–2 seconds and a PAYOFF before it ends.
-- Open on the action or the reaction — never on quiet driving or loading.
-- Self-contained: viewer must understand what happened without watching the full stream.
-- Spread picks across the whole stream (early / mid / late), not only the beginning.
-- Avoid heavy story spoilers and long cutscenes.
-- Titles must be search-friendly and specific. Good examples:
-  "GTA 6 police chase goes wrong in 12 seconds"
-  "GTA 6 stunt jump I had no right to land"
-  "GTA 6 funny NPC moment caught on stream"
-  "GTA 6 crash with the worst timing"
-  Bad: "OMG watch this", "Part 47", "#gta6 #viral"
+Rules:
+- Each clip 15–45 seconds (sweet spot 25–40s). Clear HOOK in first 1–2s and PAYOFF before end.
+- Open on action/reaction — never quiet driving or menus.
+- Spread across the stream (early/mid/late).
+- Titles search-friendly, prefer starting with "GTA 6".
+- Return ONLY valid JSON array: start, end, title, reason.
 
-Return ONLY a valid JSON array of objects with keys:
-- start (float seconds)
-- end (float seconds)
-- title (under 70 chars, starts with "GTA 6" when possible)
-- reason (one short line why it will perform)
-
-Transcript (sampled across the stream):
+Transcript (sampled):
 {sampled}
 """
-    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", ""))
-    resp = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-    )
-    text = (resp.text or "").strip()
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        print("[!] GEMINI_API_KEY missing — cannot select clips")
+        return []
+    try:
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        text = (resp.text or "").strip()
+    except Exception as e:
+        print(f"[!] Gemini API failure: {e}")
+        return []
+
     if "```json" in text:
         text = text.split("```json")[1].split("```")[0]
     elif "```" in text:
@@ -358,41 +435,14 @@ Transcript (sampled across the stream):
         return [c for c in clips if isinstance(c, dict) and "start" in c and "end" in c][:max_clips]
     except Exception as e:
         print(f"[!] AI parse failed: {e}")
-        print(f"[!] Raw AI response (first 500 chars): {text[:500]}")
+        print(f"[!] Raw AI response (first 400 chars): {text[:400]}")
         return []
 
 
-def download_segment(url: str, start: float, end: float, out_path: Path) -> bool:
-    section = f"*{start}-{end}"
-    def _do():
-        opts = _ydl_opts(
-            format="bestvideo[height<=1080]+bestaudio/best",
-            outtmpl=str(out_path.with_suffix("")),  # yt-dlp adds extension
-            download_sections=[section],
-            # Force merge into mp4 when possible
-            merge_output_format="mp4",
-        )
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-
-        # yt-dlp may write .mp4 / .mkv / .webm depending on formats
-        if out_path.exists():
-            return True
-        for cand in out_path.parent.glob(out_path.stem + ".*"):
-            if cand.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"}:
-                cand.rename(out_path)
-                return True
-        raise RuntimeError("segment file not created")
-
-    try:
-        return wait_and_retry_on_bot(url, _do, "download_segment")
-    except Exception as e:
-        print(f"[!] Segment download failed: {e}")
-        return False
-
-
+# ---------------------------------------------------------------------------
+# FFmpeg edit (captions, hook, SFX, mild loop polish)
+# ---------------------------------------------------------------------------
 def _escape_drawtext(text: str) -> str:
-    """Escape text for ffmpeg drawtext filter."""
     text = (text or "").replace("\n", " ").strip()
     if len(text) > 55:
         text = text[:52].rsplit(" ", 1)[0] + "…"
@@ -402,7 +452,6 @@ def _escape_drawtext(text: str) -> str:
 
 
 def _ass_time(t: float) -> str:
-    """Seconds → ASS timestamp H:MM:SS.cc"""
     if t < 0:
         t = 0
     h = int(t // 3600)
@@ -416,9 +465,8 @@ def _ass_time(t: float) -> str:
 
 
 def _write_word_highlight_ass(captions: list[dict], ass_path: Path) -> None:
-    """ASS karaoke-style captions: active word highlights yellow, rest white."""
     header = """[Script Info]
-Title: GTA6 Short captions
+Title: Short captions
 ScriptType: v4.00+
 PlayResX: 1080
 PlayResY: 1920
@@ -442,9 +490,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         words = text.split()
         if not words:
             continue
-        # Evenly split segment duration across words (centiseconds for \k)
-        per = max(8, int((dur / len(words)) * 100))  # cs
-        # Karaoke: SecondaryColour fills as \k advances → yellow highlight on active word
+        per = max(8, int((dur / len(words)) * 100))
         karaoke = "".join(f"{{\\k{per}}}{w} " for w in words).strip()
         lines.append(
             f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{karaoke}\n"
@@ -453,7 +499,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def _find_whoosh() -> Path | None:
-    """Locate whoosh/impact SFX under assets/sfx."""
     root = Path(__file__).resolve().parent / "assets" / "sfx"
     if not root.is_dir():
         return None
@@ -461,7 +506,6 @@ def _find_whoosh() -> Path | None:
         p = root / name
         if p.is_file() and p.stat().st_size > 1000:
             return p
-    # any mp3/wav in folder
     for p in sorted(root.glob("*")):
         if p.suffix.lower() in {".mp3", ".wav", ".m4a", ".ogg"} and p.stat().st_size > 1000:
             return p
@@ -480,127 +524,10 @@ def _probe_duration(path: Path) -> float:
         return 0.0
 
 
-def edit_clip(
-    src: Path,
-    dest: Path,
-    captions: list[dict],
-    zoom: bool = True,
-    hook_text: str | None = None,
-    add_sfx: bool = True,
-    seamless_loop: bool = True,
-) -> bool:
-    """High-retention Shorts edit pipeline (GTA 6 focused).
-
-    Features:
-    1. 9:16 center crop + mild push-in
-    2. Hook text first 2.5s
-    3. Word-by-word karaoke color highlight captions (yellow active word)
-    4. Whoosh / impact SFX at start (+ soft hit near payoff)
-    5. Seamless-friendly loop: soft in/out fades + short end→start crossfade tail
-    """
-    ass_path = dest.with_suffix(".ass")
-    _write_word_highlight_ass(captions, ass_path)
-
-    duration = _probe_duration(src)
-    if duration <= 0:
-        duration = 30.0
-
-    # --- Video filters ---
-    if zoom:
-        vf_core = (
-            "scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920,"
-            "scale=1145:2035,"
-            "crop=1080:1920"
-        )
-    else:
-        vf_core = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
-
-    vfilters = [vf_core]
-
-    if hook_text:
-        safe = _escape_drawtext(hook_text)
-        vfilters.append(
-            f"drawtext=text='{safe}'"
-            f":fontsize=42:fontcolor=white:borderw=4:bordercolor=black"
-            f":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            f":x=(w-text_w)/2:y=h*0.18"
-            f":enable='lt(t,2.5)'"
-        )
-
-    # Word-highlight ASS (path may contain special chars — escape for filter)
-    ass_esc = str(ass_path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
-    vfilters.append(f"ass={ass_esc}")
-
-    # Soft fade for loop friendliness
-    fade_in = 0.12
-    fade_out = 0.28
-    if seamless_loop and duration > 1.5:
-        vfilters.append(f"fade=t=in:st=0:d={fade_in}")
-        vfilters.append(f"fade=t=out:st={max(0, duration - fade_out)}:d={fade_out}")
-
-    vf = ",".join(vfilters)
-
-    whoosh = _find_whoosh() if add_sfx else None
-    cmd: list[str] = ["ffmpeg", "-y", "-i", str(src)]
-
-    # --- Audio: game audio + whoosh at 0s + soft whoosh near 70% ---
-    if whoosh and whoosh.is_file():
-        cmd += ["-i", str(whoosh)]
-        # Trim whoosh to short hits: 0–0.45s start, another hit mid-late
-        # volume low so dialogue stays clear
-        impact_at = max(0.5, duration * 0.72)
-        afilter = (
-            # [0:a] main gameplay
-            f"[0:a]afade=t=in:st=0:d={fade_in},afade=t=out:st={max(0, duration - fade_out)}:d={fade_out},volume=1.0[a0];"
-            # start whoosh (first 0.5s of SFX file)
-            f"[1:a]atrim=0:0.55,asetpts=PTS-STARTPTS,volume=0.45,afade=t=out:st=0.4:d=0.15[w1];"
-            # impact-ish hit later (reuse 0.15–0.55 of same file)
-            f"[1:a]atrim=0.15:0.55,asetpts=PTS-STARTPTS,volume=0.35,adelay={int(impact_at * 1000)}|{int(impact_at * 1000)}[w2];"
-            f"[a0][w1][w2]amix=inputs=3:duration=first:dropout_transition=0:normalize=0[aout]"
-        )
-        cmd += [
-            "-filter_complex", f"[0:v]{vf}[vout];{afilter}",
-            "-map", "[vout]", "-map", "[aout]",
-        ]
-    else:
-        # video only + simple audio fade
-        af = f"afade=t=in:st=0:d={fade_in},afade=t=out:st={max(0, duration - fade_out)}:d={fade_out}"
-        cmd += ["-vf", vf, "-af", af]
-
-    cmd += [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
-        "-t", f"{duration:.3f}",
-        str(dest),
-    ]
-
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-        if not dest.exists():
-            return False
-
-        # Optional seamless loop polish: short end→start crossfade append
-        # Makes the last ~0.35s blend into the first frames so Shorts replay feels continuous
-        if seamless_loop and duration > 4.0:
-            _apply_loop_crossfade(dest, duration)
-        return dest.exists()
-    except subprocess.CalledProcessError as e:
-        err = (e.stderr or "")[-600:]
-        print(f"[!] Edit failed: {err}")
-        return _edit_clip_fallback(src, dest, captions, hook_text)
-    except Exception as e:
-        print(f"[!] Edit failed: {e}")
-        return _edit_clip_fallback(src, dest, captions, hook_text)
-
-
 def _apply_loop_crossfade(path: Path, duration: float, xfade_d: float = 0.35) -> None:
-    """Blend last xfade_d seconds into the opening so auto-replay feels seamless."""
     if duration <= xfade_d * 3:
         return
     tmp = path.with_name(path.stem + "_loop" + path.suffix)
-    # Main body until (duration - xfade_d), then xfade with head of clip
     offset = duration - xfade_d
     fc = (
         f"[0:v]split=2[v0][v1];"
@@ -633,10 +560,7 @@ def _apply_loop_crossfade(path: Path, duration: float, xfade_d: float = 0.35) ->
             tmp.unlink(missing_ok=True)
 
 
-def _edit_clip_fallback(
-    src: Path, dest: Path, captions: list[dict], hook_text: str | None
-) -> bool:
-    """Simpler path if full filter graph fails."""
+def _edit_clip_fallback(src: Path, dest: Path, captions: list[dict]) -> bool:
     ass_path = dest.with_suffix(".ass")
     if not ass_path.exists():
         _write_word_highlight_ass(captions, ass_path)
@@ -658,75 +582,184 @@ def _edit_clip_fallback(
         return False
 
 
+def edit_clip(
+    src: Path,
+    dest: Path,
+    captions: list[dict],
+    zoom: bool = True,
+    hook_text: str | None = None,
+    add_sfx: bool = True,
+    seamless_loop: bool = True,
+) -> bool:
+    """9:16 crop, hook text, karaoke captions, optional SFX, loop-friendly fades."""
+    ass_path = dest.with_suffix(".ass")
+    _write_word_highlight_ass(captions, ass_path)
+    duration = _probe_duration(src) or 30.0
+
+    if zoom:
+        vf_core = (
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,scale=1145:2035,crop=1080:1920"
+        )
+    else:
+        vf_core = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+
+    vfilters = [vf_core]
+    if hook_text:
+        safe = _escape_drawtext(hook_text)
+        vfilters.append(
+            f"drawtext=text='{safe}'"
+            f":fontsize=42:fontcolor=white:borderw=4:bordercolor=black"
+            f":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            f":x=(w-text_w)/2:y=h*0.18:enable='lt(t,2.5)'"
+        )
+    ass_esc = str(ass_path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    vfilters.append(f"ass={ass_esc}")
+
+    fade_in, fade_out = 0.12, 0.28
+    if seamless_loop and duration > 1.5:
+        vfilters.append(f"fade=t=in:st=0:d={fade_in}")
+        vfilters.append(f"fade=t=out:st={max(0, duration - fade_out)}:d={fade_out}")
+    vf = ",".join(vfilters)
+
+    whoosh = _find_whoosh() if add_sfx else None
+    cmd: list[str] = ["ffmpeg", "-y", "-i", str(src)]
+    if whoosh and whoosh.is_file():
+        cmd += ["-i", str(whoosh)]
+        impact_at = max(0.5, duration * 0.72)
+        afilter = (
+            f"[0:a]afade=t=in:st=0:d={fade_in},afade=t=out:st={max(0, duration - fade_out)}:d={fade_out},volume=1.0[a0];"
+            f"[1:a]atrim=0:0.55,asetpts=PTS-STARTPTS,volume=0.45,afade=t=out:st=0.4:d=0.15[w1];"
+            f"[1:a]atrim=0.15:0.55,asetpts=PTS-STARTPTS,volume=0.35,"
+            f"adelay={int(impact_at * 1000)}|{int(impact_at * 1000)}[w2];"
+            f"[a0][w1][w2]amix=inputs=3:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
+        cmd += [
+            "-filter_complex", f"[0:v]{vf}[vout];{afilter}",
+            "-map", "[vout]", "-map", "[aout]",
+        ]
+    else:
+        af = f"afade=t=in:st=0:d={fade_in},afade=t=out:st={max(0, duration - fade_out)}:d={fade_out}"
+        cmd += ["-vf", vf, "-af", af]
+
+    cmd += [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-t", f"{duration:.3f}",
+        str(dest),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        if not dest.exists():
+            return False
+        if seamless_loop and duration > 4.0:
+            _apply_loop_crossfade(dest, duration)
+        return dest.exists()
+    except subprocess.CalledProcessError as e:
+        print(f"[!] Edit failed: {(e.stderr or '')[-500:]}")
+        return _edit_clip_fallback(src, dest, captions)
+    except Exception as e:
+        print(f"[!] Edit failed: {e}")
+        return _edit_clip_fallback(src, dest, captions)
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
 def process_url(url: str, max_clips: int = 10, schedule: bool = True) -> list[Path]:
-    """Clip a GTA 6 (or other) stream/VOD into multiple Shorts.
-    Default: aim for 10 clips, schedule 1 per day at 11 PM IST.
-    """
+    """Clip a stream/VOD into Shorts. Fail fast on auth/429. Preserve outputs on upload errors."""
+    print(f"[+] yt-dlp version: {yt_dlp.version.__version__}")
     vid = get_video_id(url)
     workdir = config.OUTPUT_DIR / "clips" / vid
     workdir.mkdir(parents=True, exist_ok=True)
-
     print(f"[+] Analyzing {url} (id={vid})")
-    if _resolve_cookiefile():
-        print("[i] Cookies are available — bot-check risk should be much lower")
-    else:
-        print("[!] No YOUTUBE_COOKIES / YOUTUBE_COOKIES_FILE set. High chance of bot/429 block on GitHub Actions.")
 
-    transcript = download_transcript(url, workdir)
+    try:
+        transcript = download_transcript(url, workdir)
+    except ExtractionAuthError as e:
+        print(f"[!] Auth challenge — stopping extraction. {e}")
+        return []
+    except ExtractionRateLimitError as e:
+        print(f"[!] Rate limited — stopping extraction. {e}")
+        return []
+    except ExtractionNetworkError as e:
+        print(f"[!] Network failure after retries. {e}")
+        return []
+    except Exception as e:
+        print(f"[!] Transcript download failed: {e}")
+        return []
+
     if not transcript:
-        print("[!] No transcript available. Video may be blocked, have no captions, or still be live without finalized subs.")
+        print("[!] No transcript/subtitles available for this video.")
         return []
 
     duration_h = (transcript[-1]["end"] - transcript[0]["start"]) / 3600.0
-    print(f"[+] Got {len(transcript)} transcript segments spanning ~{duration_h:.1f} hours")
+    print(f"[+] Got {len(transcript)} segments spanning ~{duration_h:.1f} hours")
 
-    clips = pick_best_clips(transcript, video_title="GTA 6 stream", max_clips=max_clips)
-    print(f"[+] AI selected {len(clips)} clips (target was {max_clips})")
+    clips = pick_best_clips(transcript, video_title="stream", max_clips=max_clips)
+    print(f"[+] AI selected {len(clips)} clips (target {max_clips})")
+    if not clips:
+        print("[!] No clips selected — AI or parse failure")
+        return []
 
-    produced = []
-    # Pre-fetch enough future 11 PM slots so we can schedule one clip per day
-    slots = find_next_available_slots(max(len(clips), max_clips)) if schedule else []
+    slots = []
+    if schedule:
+        try:
+            slots = find_next_available_slots(max(len(clips), max_clips))
+        except Exception as e:
+            print(f"[!] Could not fetch schedule slots (OAuth?): {e}")
+            print("[i] Clips will still be produced; schedule skipped")
 
+    produced: list[Path] = []
     for i, clip in enumerate(clips, 1):
         start, end = float(clip["start"]), float(clip["end"])
         dur = end - start
         if dur < 10 or dur > 55:
-            print(f"[i] Skipping clip {i}: duration {dur:.1f}s out of viral range (10–55s)")
+            print(f"[i] Skipping clip {i}: duration {dur:.1f}s out of range")
             continue
         raw = workdir / f"raw_{i}.mp4"
         final = workdir / f"short_{i}.mp4"
-        print(f"[+] Downloading segment {i}: {start:.1f}s → {end:.1f}s ({dur:.0f}s)")
+        print(f"[+] Downloading segment {i}: {start:.1f}s → {end:.1f}s")
         if not download_segment(url, start, end, raw):
+            # Auth failure on first segment should stop the batch
             continue
         rel_caps = [
-            {"start": max(0, s["start"] - start), "end": max(0.1, s["end"] - start), "text": s["text"]}
+            {
+                "start": max(0, s["start"] - start),
+                "end": max(0.1, s["end"] - start),
+                "text": s["text"],
+            }
             for s in transcript
             if s["end"] > start and s["start"] < end
         ]
-        title = (clip.get("title") or f"GTA 6 Best Moment {i}")[:100]
+        title = (clip.get("title") or f"Best Moment {i}")[:100]
         if not title.upper().startswith("GTA"):
             title = f"GTA 6 {title}"[:100]
-        # Hook overlay = short version of the viral title (first 2.5s on screen)
-        if edit_clip(raw, final, rel_caps, zoom=True, hook_text=title):
-            produced.append(final)
-            meta = {
-                "title": title,
-                "description": (
-                    f"{title}\n\n"
-                    f"Clipped from stream. Best GTA 6 moments.\n\n"
-                    f"#GTA6 #GTA6Shorts #GTA6Clips #shorts #gaming #GTA"
-                ),
-                "hashtags": [
-                    "GTA6", "GTA6Shorts", "GTA6Clips", "shorts",
-                    "GTA", "gaming", "ViceCity", "GTA6Moments",
-                ],
-            }
-            (workdir / f"meta_{i}.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-            if schedule and slots:
+        if not edit_clip(raw, final, rel_caps, zoom=True, hook_text=title):
+            continue
+        produced.append(final)
+        meta = {
+            "title": title,
+            "description": (
+                f"{title}\n\nClipped from stream.\n\n"
+                f"#GTA6 #GTA6Shorts #GTA6Clips #shorts #gaming #GTA"
+            ),
+            "hashtags": [
+                "GTA6", "GTA6Shorts", "GTA6Clips", "shorts",
+                "GTA", "gaming", "ViceCity", "GTA6Moments",
+            ],
+        }
+        (workdir / f"meta_{i}.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        if schedule and slots:
+            try:
                 day, hour, minute = slots.pop(0)
                 print(f"[+] Scheduling clip {i} → day+{day} at {hour:02d}:{minute:02d} IST")
                 schedule_video_upload(final, meta, hour, minute, day_offset=day)
-    print(f"[+] Produced {len(produced)} Shorts from this stream")
+            except Exception as e:
+                print(f"[!] Upload/schedule failed (clip file preserved): {e}")
+
+    print(f"[+] Produced {len(produced)} Shorts")
     return produced
 
 
@@ -735,4 +768,5 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python clipper.py <youtube_url>")
         sys.exit(1)
-    process_url(sys.argv[1])
+    out = process_url(sys.argv[1])
+    sys.exit(0 if out else 1)
