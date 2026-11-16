@@ -4,7 +4,8 @@
 Paste a YouTube URL → download transcript → AI picks best moments →
 ffmpeg edit (9:16 + zoom + captions) → schedule 1 short/day on YouTube.
 
-When YouTube shows bot verification, emails the link so it can be manually verified.
+When YouTube shows bot verification, emails the link and waits/retries
+so the job can continue after manual verification if the block lifts.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import json
 import os
 import smtplib
 import subprocess
+import time
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -36,6 +38,10 @@ YDL_BASE = {
     "sleep_interval": 1,
     "max_sleep_interval": 5,
 }
+
+# How long the bot waits and retries after sending the verification email
+WAIT_MINUTES = int(os.getenv("BOT_WAIT_MINUTES", "8"))
+RETRY_INTERVAL_SEC = 60
 
 
 def is_bot_error(err: Exception | str) -> bool:
@@ -64,16 +70,19 @@ def send_bot_alert_email(video_url: str, error_msg: str = "") -> bool:
         print(f"[!] Video URL: {video_url}")
         return False
 
-    subject = "[Clip Bot] YouTube bot verification required"
+    subject = "[Clip Bot] YouTube bot verification required — bot is waiting"
     body = f"""YouTube blocked the clipper with a bot check.
 
 Video URL (open and verify manually):
 {video_url}
 
+The bot is currently WAITING and will retry automatically for about {WAIT_MINUTES} minutes.
+Please open the link, sign in if asked, and complete the verification as soon as possible.
+
 Error:
 {error_msg[:500]}
 
-After you verify in the browser, re-run the GitHub Action with the same URL.
+If the block does not lift, you may need to re-run the Action after verifying.
 """
     msg = MIMEText(body)
     msg["Subject"] = subject
@@ -93,16 +102,45 @@ After you verify in the browser, re-run the GitHub Action with the same URL.
         return False
 
 
+def wait_and_retry_on_bot(url: str, attempt_fn, description: str = "operation"):
+    """
+    Try `attempt_fn()`. If bot error, email once, then wait and retry for WAIT_MINUTES.
+    Returns the successful result or raises the last error.
+    """
+    emailed = False
+    deadline = time.time() + WAIT_MINUTES * 60
+    last_err = None
+
+    while True:
+        try:
+            return attempt_fn()
+        except Exception as e:
+            last_err = e
+            if not is_bot_error(e):
+                raise
+            print(f"[!] Bot check during {description}: {e}")
+            if not emailed:
+                send_bot_alert_email(url, str(e))
+                emailed = True
+                print(f"[+] Bot is waiting up to {WAIT_MINUTES} minutes for verification...")
+            if time.time() >= deadline:
+                print("[!] Wait time expired. Still blocked.")
+                raise
+            print(f"[i] Retrying {description} in {RETRY_INTERVAL_SEC}s...")
+            time.sleep(RETRY_INTERVAL_SEC)
+
+
 def get_video_id(url: str) -> str:
-    opts = {**YDL_BASE, "skip_download": True}
-    try:
+    def _do():
+        opts = {**YDL_BASE, "skip_download": True}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return info.get("id") or "unknown"
+
+    try:
+        return wait_and_retry_on_bot(url, _do, "get_video_id")
     except Exception as e:
         print(f"[!] get_video_id failed: {e}")
-        if is_bot_error(e):
-            send_bot_alert_email(url, str(e))
         # fallback: extract from URL
         if "v=" in url:
             return url.split("v=")[1].split("&")[0][:11]
@@ -113,40 +151,41 @@ def get_video_id(url: str) -> str:
 
 def download_transcript(url: str, workdir: Path) -> list[dict]:
     """Get auto/manual English subtitles as list of {start, end, text}."""
-    opts = {
-        **YDL_BASE,
-        "skip_download": True,
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": ["en", "hi"],
-        "subtitlesformat": "json3",
-        "outtmpl": str(workdir / "%(id)s"),
-    }
-    try:
+    def _do():
+        opts = {
+            **YDL_BASE,
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en", "hi"],
+            "subtitlesformat": "json3",
+            "outtmpl": str(workdir / "%(id)s"),
+        }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
+        for p in workdir.glob("*.json3"):
+            try:
+                data = json.loads(p.read_text())
+                events = data.get("events") or []
+                segments = []
+                for ev in events:
+                    if "segs" not in ev:
+                        continue
+                    start = ev.get("tStartMs", 0) / 1000.0
+                    dur = ev.get("dDurationMs", 0) / 1000.0
+                    text = "".join(s.get("utf8", "") for s in ev.get("segs", [])).strip()
+                    if text:
+                        segments.append({"start": start, "end": start + dur, "text": text})
+                return segments
+            except Exception:
+                continue
+        return []
+
+    try:
+        return wait_and_retry_on_bot(url, _do, "download_transcript")
     except Exception as e:
         print(f"[!] Transcript download failed: {e}")
-        if is_bot_error(e):
-            send_bot_alert_email(url, str(e))
         return []
-    for p in workdir.glob("*.json3"):
-        try:
-            data = json.loads(p.read_text())
-            events = data.get("events") or []
-            segments = []
-            for ev in events:
-                if "segs" not in ev:
-                    continue
-                start = ev.get("tStartMs", 0) / 1000.0
-                dur = ev.get("dDurationMs", 0) / 1000.0
-                text = "".join(s.get("utf8", "") for s in ev.get("segs", [])).strip()
-                if text:
-                    segments.append({"start": start, "end": start + dur, "text": text})
-            return segments
-        except Exception:
-            continue
-    return []
 
 
 def pick_best_clips(transcript: list[dict], video_title: str = "stream", max_clips: int = 5) -> list[dict]:
@@ -192,20 +231,23 @@ Transcript:
 
 def download_segment(url: str, start: float, end: float, out_path: Path) -> bool:
     section = f"*{start}-{end}"
-    opts = {
-        **YDL_BASE,
-        "format": "bestvideo[height<=1080]+bestaudio/best",
-        "outtmpl": str(out_path),
-        "download_sections": [section],
-    }
-    try:
+    def _do():
+        opts = {
+            **YDL_BASE,
+            "format": "bestvideo[height<=1080]+bestaudio/best",
+            "outtmpl": str(out_path),
+            "download_sections": [section],
+        }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
-        return out_path.exists()
+        if not out_path.exists():
+            raise RuntimeError("segment file not created")
+        return True
+
+    try:
+        return wait_and_retry_on_bot(url, _do, "download_segment")
     except Exception as e:
         print(f"[!] Segment download failed: {e}")
-        if is_bot_error(e):
-            send_bot_alert_email(url, str(e))
         return False
 
 
