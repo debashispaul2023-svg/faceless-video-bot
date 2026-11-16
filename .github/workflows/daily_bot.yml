@@ -1,36 +1,43 @@
-name: Sunny Grove Friends Pipeline
+name: Clip & Schedule Pipeline
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "demo | episode | compile | plan"
+        description: "clip | demo | plan | episode"
         required: true
-        default: "demo"
+        default: "clip"
         type: choice
         options:
+          - clip
           - demo
           - plan
           - episode
-          - compile
+      video_url:
+        description: "YouTube live/VOD URL (for clip mode)"
+        required: false
+        default: ""
       idea:
-        description: "Original story idea (episode mode)"
+        description: "Original story idea (episode mode — legacy)"
         required: false
-        default: "Toto loses a giant mango"
+        default: ""
       upload:
-        description: "Upload to YouTube after QC (still private)"
+        description: "Schedule/upload to YouTube after processing"
         required: false
-        default: false
+        default: true
         type: boolean
+      max_clips:
+        description: "How many best clips to produce"
+        required: false
+        default: "3"
   schedule:
-    # Daily generate only. Upload stays off unless AUTO_UPLOAD secret is true
-    # AND the workflow input upload=true.
+    # Optional daily check; clip mode needs a URL so mainly manual
     - cron: "0 8 * * *"
 
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: write
 
@@ -52,53 +59,38 @@ jobs:
       - name: Run pipeline
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ELEVENLABS_API_KEYS: ${{ secrets.ELEVENLABS_API_KEYS }}
-          ELEVENLABS_VOICE_TOTO: ${{ secrets.ELEVENLABS_VOICE_TOTO }}
-          ELEVENLABS_VOICE_MOMO: ${{ secrets.ELEVENLABS_VOICE_MOMO }}
-          ELEVENLABS_VOICE_PIKU: ${{ secrets.ELEVENLABS_VOICE_PIKU }}
-          ELEVENLABS_VOICE_FIKO: ${{ secrets.ELEVENLABS_VOICE_FIKO }}
-          ELEVENLABS_VOICE_NARRATOR: ${{ secrets.ELEVENLABS_VOICE_NARRATOR }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-          STORY_PROVIDER: ${{ secrets.STORY_PROVIDER }}
-          VISUAL_PROVIDER: ${{ secrets.VISUAL_PROVIDER }}
-          TTS_PROVIDER: ${{ secrets.TTS_PROVIDER }}
-          AUTO_UPLOAD: "false"
+          AUTO_UPLOAD: "${{ github.event.inputs.upload || 'true' }}"
         run: |
-          MODE="${{ github.event.inputs.mode || 'demo' }}"
-          IDEA="${{ github.event.inputs.idea || 'Toto loses a giant mango' }}"
-          UPLOAD="${{ github.event.inputs.upload || 'false' }}"
+          MODE="${{ github.event.inputs.mode || 'clip' }}"
+          URL="${{ github.event.inputs.video_url || '' }}"
+          IDEA="${{ github.event.inputs.idea || '' }}"
+          MAX="${{ github.event.inputs.max_clips || '3' }}"
+          UPLOAD="${{ github.event.inputs.upload || 'true' }}"
 
-          # Safe defaults when secrets are empty (Actions still runs --demo)
-          export STORY_PROVIDER="${STORY_PROVIDER:-local}"
-          export VISUAL_PROVIDER="${VISUAL_PROVIDER:-local}"
-          export TTS_PROVIDER="${TTS_PROVIDER:-local}"
-
-          if [ "$MODE" = "demo" ]; then
+          if [ "$MODE" = "clip" ]; then
+            if [ -z "$URL" ]; then
+              echo "No video_url provided for clip mode. Skipping."
+              exit 0
+            fi
+            python main.py --clip-url "$URL" --max-clips "$MAX" ${UPLOAD:+--upload}
+          elif [ "$MODE" = "demo" ]; then
             python main.py --demo
           elif [ "$MODE" = "plan" ]; then
             python main.py --plan-only --idea "$IDEA"
-          elif [ "$MODE" = "compile" ]; then
-            python main.py --compile
           else
-            if [ "$UPLOAD" = "true" ]; then
-              python main.py --idea "$IDEA" --upload
-            else
-              python main.py --idea "$IDEA"
-            fi
+            python main.py --idea "$IDEA" ${UPLOAD:+--upload}
           fi
 
-      - name: Upload produced media
+      - name: Upload produced clips
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sunny-grove-output
+          name: clip-output
           path: |
-            output/episodes/**/final.mp4
-            output/episodes/**/thumbnail.jpg
-            output/episodes/**/production_plan.json
-            output/episodes/**/validation.json
-            output/compilations/*.mp4
+            output/clips/**/*.mp4
+            output/clips/**/*.json
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
