@@ -347,7 +347,37 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 AUDIO_CHUNK_SEC = 600
 MAX_AUDIO_MINUTES = int(os.getenv("MAX_AUDIO_MINUTES", "240"))
-TRANSCRIBE_MODEL = os.getenv("GEMINI_TRANSCRIBE_MODEL", "gemini-2.5-flash")
+# Models tried in order; a 404 (retired model) moves on to the next one.
+# Override the first choice with the GEMINI_MODEL env var.
+GEMINI_MODELS = [m for m in [
+    os.getenv("GEMINI_MODEL", "").strip(),
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+] if m]
+_WORKING_MODEL: str | None = None
+
+
+def gemini_generate(client, contents):
+    """generate_content with automatic fallback across model names on 404/not found."""
+    global _WORKING_MODEL
+    models = [_WORKING_MODEL] if _WORKING_MODEL else GEMINI_MODELS
+    last = None
+    for m in models:
+        try:
+            resp = client.models.generate_content(model=m, contents=contents)
+            if _WORKING_MODEL != m:
+                print(f"[i] Using Gemini model: {m}")
+            _WORKING_MODEL = m
+            return resp
+        except Exception as e:
+            last = e
+            msg = str(e)
+            if "404" in msg or "NOT_FOUND" in msg or "no longer available" in msg:
+                print(f"[!] Model {m} unavailable - trying next")
+                continue
+            raise
+    raise last if last else RuntimeError("no Gemini model available")
 
 
 def _parse_json_array(text: str) -> list:
@@ -409,7 +439,7 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
             pass
 
     chunks = sorted(workdir.glob("chunk_*.mp3"))
-    print(f"[i] Transcribing {len(chunks)} audio chunks with {TRANSCRIBE_MODEL}")
+    print(f"[i] Transcribing {len(chunks)} audio chunks with Gemini")
     client = genai.Client(api_key=api_key)
     segments: list[dict] = []
 
@@ -425,7 +455,7 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
         for attempt in range(3):
             try:
                 up = client.files.upload(file=str(chunk))
-                resp = client.models.generate_content(model=TRANSCRIBE_MODEL, contents=[prompt, up])
+                resp = gemini_generate(client, [prompt, up])
                 try:
                     client.files.delete(name=up.name)
                 except Exception:
@@ -557,7 +587,7 @@ Transcript (sampled):
         return []
     try:
         client = genai.Client(api_key=api_key)
-        resp = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        resp = gemini_generate(client, prompt)
         text = (resp.text or "").strip()
     except Exception as e:
         print(f"[!] Gemini API failure: {e}")
