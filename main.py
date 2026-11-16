@@ -161,7 +161,7 @@ def parse_args(argv=None):
     p.add_argument("--self-test", action="store_true", help="Run lightweight failure-path tests")
     p.add_argument("--plan-only", action="store_true", help="Phase 1 only: idea → story → plan → validate")
     p.add_argument("--clip-url", type=str, default=None, help="YouTube URL to analyze and clip")
-    p.add_argument("--max-clips", type=int, default=3, help="How many best clips to produce")
+    p.add_argument("--max-clips", type=int, default=10, help="How many best clips to produce (GTA 6: aim 10+)")
     return p.parse_args(argv)
 
 

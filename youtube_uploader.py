@@ -17,7 +17,7 @@ import config
 
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
-DAILY_SLOTS = [(17, 0)]  # 5:00 PM IST
+DAILY_SLOTS = [(23, 0)]  # 11:00 PM IST — best window for GTA 6 Shorts in India/US evening overlap
 
 def find_next_available_slots(count: int = 1):
     youtube = authenticate_youtube()
