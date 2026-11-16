@@ -22,7 +22,7 @@ on:
         required: false
         default: ""
       upload:
-        description: "Schedule/upload to YouTube after processing"
+        description: "Schedule/upload to YouTube after processing (turn OFF for test)"
         required: false
         default: true
         type: boolean
@@ -75,13 +75,21 @@ jobs:
               echo "No video_url provided for clip mode. Skipping."
               exit 0
             fi
-            python main.py --clip-url "$URL" --max-clips "$MAX" ${UPLOAD:+--upload}
+            if [ "$UPLOAD" = "true" ]; then
+              python main.py --clip-url "$URL" --max-clips "$MAX" --upload
+            else
+              python main.py --clip-url "$URL" --max-clips "$MAX"
+            fi
           elif [ "$MODE" = "demo" ]; then
             python main.py --demo
           elif [ "$MODE" = "plan" ]; then
             python main.py --plan-only --idea "$IDEA"
           else
-            python main.py --idea "$IDEA" ${UPLOAD:+--upload}
+            if [ "$UPLOAD" = "true" ]; then
+              python main.py --idea "$IDEA" --upload
+            else
+              python main.py --idea "$IDEA"
+            fi
           fi
 
       - name: Upload produced clips
