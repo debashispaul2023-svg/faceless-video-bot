@@ -31,7 +31,7 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
         "skip_download": True,
         "writesubtitles": True,
         "writeautomaticsub": True,
-        "subtitleslangs": ["en"],
+        "subtitleslangs": ["en", "hi"],
         "subtitlesformat": "json3",
         "outtmpl": str(workdir / "%(id)s"),
     }
@@ -54,16 +54,24 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
 
 
 def pick_best_clips(transcript: list[dict], video_title: str = "stream", max_clips: int = 5) -> list[dict]:
-    """Use Gemini to select best short moments (15-60s)."""
+    """Use Gemini to select best short moments (15-60s). Gaming-focused."""
     if not transcript:
         return []
-    lines = [f"{s['start']:.1f}-{s['end']:.1f}: {s['text']}" for s in transcript[:800]]
-    prompt = f"""You are a viral shorts editor. From this transcript of a long video/stream titled "{video_title}", pick the {max_clips} BEST moments that would work as standalone 15-60 second YouTube Shorts.
+    lines = [f"{s['start']:.1f}-{s['end']:.1f}: {s['text']}" for s in transcript[:1200]]
+    prompt = f"""You are an expert BGMI / battle royale shorts editor. From this transcript of a stream titled "{video_title}", pick the {max_clips} BEST moments for viral YouTube Shorts.
+
+Prioritize these gaming moments (in order):
+1. High kill streaks / multi-kills / squad wipes
+2. Clutch 1vX situations or intense final circles
+3. Funny fails, rage, or unexpected moments
+4. Skillful plays (headshots, good positioning, team coordination)
+5. High energy reactions from the streamer
 
 Rules:
-- Prefer funny, surprising, skillful, emotional, or high-energy moments.
-- Each clip must be self-contained (has a hook + payoff).
-- Return ONLY valid JSON array of objects with keys: start (float seconds), end (float seconds), title (short hook title), reason (why it's good).
+- Each clip 15-50 seconds, self-contained with a clear hook and payoff.
+- Prefer moments with clear action or strong emotion.
+- Avoid long quiet/looting parts.
+- Return ONLY valid JSON array of objects with keys: start (float seconds), end (float seconds), title (short punchy title under 60 chars), reason (one line why it's good).
 
 Transcript:
 {chr(10).join(lines)}
@@ -81,7 +89,8 @@ Transcript:
     try:
         clips = json.loads(text)
         return [c for c in clips if isinstance(c, dict) and "start" in c and "end" in c][:max_clips]
-    except Exception:
+    except Exception as e:
+        print(f"[!] AI parse failed: {e}")
         return []
 
 
@@ -162,8 +171,8 @@ def process_url(url: str, max_clips: int = 3, schedule: bool = True) -> list[Pat
             produced.append(final)
             meta = {
                 "title": clip.get("title", f"Best Moment {i}")[:100],
-                "description": f"Best moment from the stream.\n\n#shorts #gaming #gta",
-                "hashtags": ["shorts", "gaming", "gta", "clip"],
+                "description": f"Best moment from the stream.\n\n#shorts #bgmi #gaming",
+                "hashtags": ["shorts", "bgmi", "gaming", "clip"],
             }
             (workdir / f"meta_{i}.json").write_text(json.dumps(meta, indent=2))
             if schedule:
