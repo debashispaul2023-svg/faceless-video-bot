@@ -543,4 +543,258 @@ def _find_whoosh() -> Path | None:
 def _probe_duration(path: Path) -> float:
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "er
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        return float(r.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _apply_loop_crossfade(path: Path, duration: float, xfade_d: float = 0.35) -> None:
+    if duration <= xfade_d * 3:
+        return
+    tmp = path.with_name(path.stem + "_loop" + path.suffix)
+    offset = duration - xfade_d
+    fc = (
+        f"[0:v]split=2[v0][v1];"
+        f"[v0]trim=0:{offset:.3f},setpts=PTS-STARTPTS[vmain];"
+        f"[v1]trim=0:{xfade_d:.3f},setpts=PTS-STARTPTS[vhead];"
+        f"[vmain][vhead]xfade=transition=fade:duration={xfade_d:.3f}:offset={offset - 0.001:.3f}[vout];"
+        f"[0:a]asplit=2[a0][a1];"
+        f"[a0]atrim=0:{offset:.3f},asetpts=PTS-STARTPTS[amain];"
+        f"[a1]atrim=0:{xfade_d:.3f},asetpts=PTS-STARTPTS[ahead];"
+        f"[amain][ahead]acrossfade=d={xfade_d:.3f}[aout]"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-i", str(path),
+        "-filter_complex", fc,
+        "-map", "[vout]", "-map", "[aout]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(tmp),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        if tmp.exists() and tmp.stat().st_size > 1000:
+            tmp.replace(path)
+        elif tmp.exists():
+            tmp.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"[i] Loop crossfade skipped: {e}")
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+def _edit_clip_fallback(src: Path, dest: Path, captions: list[dict]) -> bool:
+    ass_path = dest.with_suffix(".ass")
+    if not ass_path.exists():
+        _write_word_highlight_ass(captions, ass_path)
+    ass_esc = str(ass_path).replace("\\", "/").replace(":", "\\:")
+    vf = (
+        "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+        f"ass={ass_esc}"
+    )
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(src), "-vf", vf,
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-c:a", "aac", "-b:a", "128k", str(dest)],
+            check=True, capture_output=True,
+        )
+        return dest.exists()
+    except Exception as e:
+        print(f"[!] Fallback edit also failed: {e}")
+        return False
+
+
+def edit_clip(
+    src: Path,
+    dest: Path,
+    captions: list[dict],
+    zoom: bool = True,
+    hook_text: str | None = None,
+    add_sfx: bool = True,
+    seamless_loop: bool = True,
+) -> bool:
+    """9:16 crop, hook text, karaoke captions, optional SFX, loop-friendly fades."""
+    ass_path = dest.with_suffix(".ass")
+    _write_word_highlight_ass(captions, ass_path)
+    duration = _probe_duration(src) or 30.0
+
+    if zoom:
+        vf_core = (
+            "scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,scale=1145:2035,crop=1080:1920"
+        )
+    else:
+        vf_core = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+
+    vfilters = [vf_core]
+    if hook_text:
+        safe = _escape_drawtext(hook_text)
+        vfilters.append(
+            f"drawtext=text='{safe}'"
+            f":fontsize=42:fontcolor=white:borderw=4:bordercolor=black"
+            f":fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            f":x=(w-text_w)/2:y=h*0.18:enable='lt(t,2.5)'"
+        )
+    ass_esc = str(ass_path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    vfilters.append(f"ass={ass_esc}")
+
+    fade_in, fade_out = 0.12, 0.28
+    if seamless_loop and duration > 1.5:
+        vfilters.append(f"fade=t=in:st=0:d={fade_in}")
+        vfilters.append(f"fade=t=out:st={max(0, duration - fade_out)}:d={fade_out}")
+    vf = ",".join(vfilters)
+
+    whoosh = _find_whoosh() if add_sfx else None
+    cmd: list[str] = ["ffmpeg", "-y", "-i", str(src)]
+    if whoosh and whoosh.is_file():
+        cmd += ["-i", str(whoosh)]
+        impact_at = max(0.5, duration * 0.72)
+        afilter = (
+            f"[0:a]afade=t=in:st=0:d={fade_in},afade=t=out:st={max(0, duration - fade_out)}:d={fade_out},volume=1.0[a0];"
+            f"[1:a]atrim=0:0.55,asetpts=PTS-STARTPTS,volume=0.45,afade=t=out:st=0.4:d=0.15[w1];"
+            f"[1:a]atrim=0.15:0.55,asetpts=PTS-STARTPTS,volume=0.35,"
+            f"adelay={int(impact_at * 1000)}|{int(impact_at * 1000)}[w2];"
+            f"[a0][w1][w2]amix=inputs=3:duration=first:dropout_transition=0:normalize=0[aout]"
+        )
+        cmd += [
+            "-filter_complex", f"[0:v]{vf}[vout];{afilter}",
+            "-map", "[vout]", "-map", "[aout]",
+        ]
+    else:
+        af = f"afade=t=in:st=0:d={fade_in},afade=t=out:st={max(0, duration - fade_out)}:d={fade_out}"
+        cmd += ["-vf", vf, "-af", af]
+
+    cmd += [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-t", f"{duration:.3f}",
+        str(dest),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        if not dest.exists():
+            return False
+        if seamless_loop and duration > 4.0:
+            _apply_loop_crossfade(dest, duration)
+        return dest.exists()
+    except subprocess.CalledProcessError as e:
+        print(f"[!] Edit failed: {(e.stderr or '')[-500:]}")
+        return _edit_clip_fallback(src, dest, captions)
+    except Exception as e:
+        print(f"[!] Edit failed: {e}")
+        return _edit_clip_fallback(src, dest, captions)
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+def process_url(url: str, max_clips: int = 10, schedule: bool = True) -> list[Path]:
+    """Clip a stream/VOD into Shorts. Fail fast on auth/429. Preserve outputs on upload errors."""
+    print(f"[+] yt-dlp version: {yt_dlp.version.__version__}")
+    vid = get_video_id(url)
+    workdir = config.OUTPUT_DIR / "clips" / vid
+    workdir.mkdir(parents=True, exist_ok=True)
+    print(f"[+] Analyzing {url} (id={vid})")
+
+    try:
+        transcript = download_transcript(url, workdir)
+    except ExtractionAuthError as e:
+        print(f"[!] Auth challenge — stopping extraction. {e}")
+        return []
+    except ExtractionRateLimitError as e:
+        print(f"[!] Rate limited — stopping extraction. {e}")
+        return []
+    except ExtractionNetworkError as e:
+        print(f"[!] Network failure after retries. {e}")
+        return []
+    except Exception as e:
+        print(f"[!] Transcript download failed: {e}")
+        return []
+
+    if not transcript:
+        print("[!] No transcript/subtitles available for this video.")
+        return []
+
+    duration_h = (transcript[-1]["end"] - transcript[0]["start"]) / 3600.0
+    print(f"[+] Got {len(transcript)} segments spanning ~{duration_h:.1f} hours")
+
+    clips = pick_best_clips(transcript, video_title="stream", max_clips=max_clips)
+    print(f"[+] AI selected {len(clips)} clips (target {max_clips})")
+    if not clips:
+        print("[!] No clips selected — AI or parse failure")
+        return []
+
+    slots = []
+    if schedule:
+        try:
+            slots = find_next_available_slots(max(len(clips), max_clips))
+        except Exception as e:
+            print(f"[!] Could not fetch schedule slots (OAuth?): {e}")
+            print("[i] Clips will still be produced; schedule skipped")
+
+    produced: list[Path] = []
+    for i, clip in enumerate(clips, 1):
+        start, end = float(clip["start"]), float(clip["end"])
+        dur = end - start
+        if dur < 10 or dur > 55:
+            print(f"[i] Skipping clip {i}: duration {dur:.1f}s out of range")
+            continue
+        raw = workdir / f"raw_{i}.mp4"
+        final = workdir / f"short_{i}.mp4"
+        print(f"[+] Downloading segment {i}: {start:.1f}s → {end:.1f}s")
+        if not download_segment(url, start, end, raw):
+            # Auth failure on first segment should stop the batch
+            continue
+        rel_caps = [
+            {
+                "start": max(0, s["start"] - start),
+                "end": max(0.1, s["end"] - start),
+                "text": s["text"],
+            }
+            for s in transcript
+            if s["end"] > start and s["start"] < end
+        ]
+        title = (clip.get("title") or f"Best Moment {i}")[:100]
+        if not title.upper().startswith("GTA"):
+            title = f"GTA 6 {title}"[:100]
+        if not edit_clip(raw, final, rel_caps, zoom=True, hook_text=title):
+            continue
+        produced.append(final)
+        meta = {
+            "title": title,
+            "description": (
+                f"{title}\n\nClipped from stream.\n\n"
+                f"#GTA6 #GTA6Shorts #GTA6Clips #shorts #gaming #GTA"
+            ),
+            "hashtags": [
+                "GTA6", "GTA6Shorts", "GTA6Clips", "shorts",
+                "GTA", "gaming", "ViceCity", "GTA6Moments",
+            ],
+        }
+        (workdir / f"meta_{i}.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        if schedule and slots:
+            try:
+                day, hour, minute = slots.pop(0)
+                print(f"[+] Scheduling clip {i} → day+{day} at {hour:02d}:{minute:02d} IST")
+                schedule_video_upload(final, meta, hour, minute, day_offset=day)
+            except Exception as e:
+                print(f"[!] Upload/schedule failed (clip file preserved): {e}")
+
+    print(f"[+] Produced {len(produced)} Shorts")
+    return produced
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python clipper.py <youtube_url>")
+        sys.exit(1)
+    out = process_url(sys.argv[1])
+    sys.exit(0 if out else 1)
