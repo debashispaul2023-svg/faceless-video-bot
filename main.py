@@ -26,9 +26,13 @@ from video_renderer import render_cartoon_episode
 from visual_generator import generate_episode_visuals
 try:
     from clipper import process_url
-except Exception:
+except Exception as _clipper_err:
+    import traceback
+    traceback.print_exc()
+    _clipper_msg = f"{type(_clipper_err).__name__}: {_clipper_err}"
+
     def process_url(*a, **k):
-        print("[!] clipper not available")
+        print(f"[!] clipper not available - import failed: {_clipper_msg}")
         return []
 try:
     from youtube_uploader import build_cartoon_metadata, upload_cartoon_episode
