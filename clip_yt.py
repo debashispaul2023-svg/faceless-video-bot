@@ -190,6 +190,7 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
             except Exception as e:
                 print(f"[!] chunk {idx + 1}/{len(chunks)} attempt {attempt + 1} failed: {e}")
                 time.sleep(10 * (attempt + 1))
+        print(f"[i] chunk {idx + 1}/{len(chunks)} done - {len(segments)} segments so far", flush=True)
         chunk.unlink(missing_ok=True)
         time.sleep(2)
 
