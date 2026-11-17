@@ -3,6 +3,7 @@ from __future__ import annotations
 from google import genai
 import json
 import os
+import time
 from clip_core import MAX_TRANSCRIPT_CHARS_FOR_AI, WINDOWS_TO_SAMPLE, WINDOW_SECONDS
 
 
@@ -35,49 +36,71 @@ def _is_daily_quota(msg: str) -> bool:
     )
 
 
-def gemini_generate(client, contents):
-    """generate_content with automatic fallback across models.
+_TRANSIENT_KEYS = ("503", "unavailable", "500", "internal", "overloaded", "high demand",
+                   "deadline", "timed out", "timeout", "429", "resource_exhausted")
+TRANSIENT_ROUNDS = 4          # full passes over the model list before giving up
+TRANSIENT_SLEEP_SEC = 20      # grows each round: 20s, 40s, 60s
+
+
+def _is_transient(msg: str) -> bool:
+    low = msg.lower()
+    return any(k in low for k in _TRANSIENT_KEYS)
+
+
+def gemini_generate(client, contents, config=None):
+    """generate_content with automatic fallback + retry across models.
 
     - 404 / retired model            -> try next model
     - 429 with a DAILY quota message -> mark that model exhausted, try next model
-    - other 429 (per-minute)         -> raised so the caller can wait and retry
-    - all models exhausted           -> GeminiQuotaExhausted (callers should stop, not retry)
+    - 503 / overloaded / per-minute 429 / timeouts
+                                     -> try next model; after a full pass, wait and retry
+    - all models out of daily quota  -> GeminiQuotaExhausted (callers should stop, not retry)
     """
     global _WORKING_MODEL
-    candidates = [m for m in GEMINI_MODELS if m not in _EXHAUSTED_MODELS]
-    if _WORKING_MODEL in candidates:  # try the known-good model first
-        candidates.remove(_WORKING_MODEL)
-        candidates.insert(0, _WORKING_MODEL)
-    if not candidates:
-        raise GeminiQuotaExhausted(
-            "All Gemini models are out of daily quota. Wait for the reset (midnight Pacific "
-            "time), enable billing on the API key, or set GEMINI_MODEL to a model with quota."
-        )
     last = None
-    for m in candidates:
-        try:
-            resp = client.models.generate_content(model=m, contents=contents)
-            if _WORKING_MODEL != m:
-                print(f"[i] Using Gemini model: {m}", flush=True)
-            _WORKING_MODEL = m
-            return resp
-        except Exception as e:
-            last = e
-            msg = str(e)
-            if "404" in msg or "NOT_FOUND" in msg or "no longer available" in msg:
-                print(f"[!] Model {m} unavailable - trying next", flush=True)
-                _EXHAUSTED_MODELS.add(m)
-                continue
-            if _is_daily_quota(msg):
-                print(f"[!] Model {m} daily quota exhausted - trying next model", flush=True)
-                _EXHAUSTED_MODELS.add(m)
-                continue
-            raise
-    if all(m in _EXHAUSTED_MODELS for m in GEMINI_MODELS):
-        raise GeminiQuotaExhausted(
-            "All Gemini models are out of daily quota. Wait for the reset (midnight Pacific "
-            "time), enable billing on the API key, or set GEMINI_MODEL to a model with quota."
-        ) from last
+    for rnd in range(TRANSIENT_ROUNDS):
+        candidates = [m for m in GEMINI_MODELS if m not in _EXHAUSTED_MODELS]
+        if _WORKING_MODEL in candidates:  # known-good model first
+            candidates.remove(_WORKING_MODEL)
+            candidates.insert(0, _WORKING_MODEL)
+        if not candidates:
+            raise GeminiQuotaExhausted(
+                "All Gemini models are out of daily quota. Wait for the reset (midnight Pacific "
+                "time), enable billing on the API key, or set GEMINI_MODEL to a model with quota."
+            ) from last
+        transient_seen = False
+        for m in candidates:
+            try:
+                kwargs = {"model": m, "contents": contents}
+                if config is not None:
+                    kwargs["config"] = config
+                resp = client.models.generate_content(**kwargs)
+                if _WORKING_MODEL != m:
+                    print(f"[i] Using Gemini model: {m}", flush=True)
+                _WORKING_MODEL = m
+                return resp
+            except Exception as e:
+                last = e
+                msg = str(e)
+                if "404" in msg or "NOT_FOUND" in msg or "no longer available" in msg:
+                    print(f"[!] Model {m} unavailable - trying next", flush=True)
+                    _EXHAUSTED_MODELS.add(m)
+                    continue
+                if _is_daily_quota(msg):
+                    print(f"[!] Model {m} daily quota exhausted - trying next model", flush=True)
+                    _EXHAUSTED_MODELS.add(m)
+                    continue
+                if _is_transient(msg):
+                    transient_seen = True
+                    print(f"[!] Model {m} temporarily unavailable ({msg[:60]}...) - trying next", flush=True)
+                    continue
+                raise
+        if not transient_seen:
+            continue
+        if rnd < TRANSIENT_ROUNDS - 1:
+            wait = TRANSIENT_SLEEP_SEC * (rnd + 1)
+            print(f"[i] Gemini busy - waiting {wait}s then retrying (round {rnd + 2}/{TRANSIENT_ROUNDS})", flush=True)
+            time.sleep(wait)
     raise last if last else RuntimeError("no Gemini model available")
 
 

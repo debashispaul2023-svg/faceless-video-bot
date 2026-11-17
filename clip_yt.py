@@ -97,14 +97,27 @@ MAX_AUDIO_MINUTES = int(os.getenv("MAX_AUDIO_MINUTES", "240"))
 
 
 def _parse_json_array(text: str) -> list:
+    """Parse a JSON array from model output; salvage complete items if it was cut off."""
     text = (text or "").strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text
         text = text.rsplit("```", 1)[0]
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1:
+    start = text.find("[")
+    if start == -1:
         return []
-    return json.loads(text[start:end + 1])
+    end = text.rfind("]")
+    try:
+        return json.loads(text[start:end + 1]) if end > start else json.loads(text[start:])
+    except Exception:
+        pass
+    # truncated output: keep everything up to the last complete {...} object
+    cut = text.rfind("}")
+    while cut > start:
+        try:
+            return json.loads(text[start:cut + 1] + "]")
+        except Exception:
+            cut = text.rfind("}", start, cut)
+    return []
 
 
 def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
@@ -168,17 +181,30 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
         "Use segments of roughly 5-15 seconds. Also include short notes in [brackets] for loud "
         "events (crash, siren, gunfire, shouting). Keep original language; Hindi in Roman script is fine."
     )
+    try:
+        from google.genai import types as _gtypes
+        json_cfg = _gtypes.GenerateContentConfig(response_mime_type="application/json")
+    except Exception:
+        json_cfg = None
     for idx, chunk in enumerate(chunks):
         offset = idx * AUDIO_CHUNK_SEC
         for attempt in range(3):
             try:
                 up = client.files.upload(file=str(chunk))
-                resp = gemini_generate(client, [prompt, up])
+                resp = gemini_generate(client, [prompt, up], config=json_cfg)
                 try:
                     client.files.delete(name=up.name)
                 except Exception:
                     pass
-                for it in _parse_json_array(resp.text):
+                items = _parse_json_array(resp.text)
+                if not items:
+                    snippet = (resp.text or "")[:200].replace("\n", " ")
+                    print(f"[!] chunk {idx + 1}/{len(chunks)} attempt {attempt + 1}: empty/unparseable "
+                          f"response: {snippet!r}", flush=True)
+                    if attempt < 2:
+                        time.sleep(5)
+                        continue
+                for it in items:
                     txt = str(it.get("text", "")).strip()
                     if txt:
                         segments.append({
