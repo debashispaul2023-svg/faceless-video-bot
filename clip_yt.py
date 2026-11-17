@@ -7,7 +7,10 @@ import os
 import subprocess
 import time
 import yt_dlp
-from clip_ai import GeminiQuotaExhausted, gemini_generate
+from clip_ai import (
+    GeminiQuotaExhausted, gemini_generate, get_api_keys, key_label, make_client,
+    next_usable_key, wait_file_active,
+)
 from clip_core import ExtractionAuthError, ExtractionNetworkError, ExtractionRateLimitError, _ydl_opts, extract_id_from_url, run_extraction
 
 
@@ -122,10 +125,11 @@ def _parse_json_array(text: str) -> list:
 
 def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
     """Download low-bitrate audio, split into chunks, transcribe each with Gemini."""
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        print("[!] GEMINI_API_KEY missing - cannot transcribe audio")
+    keys = get_api_keys()
+    if not keys:
+        print("[!] GEMINI_API_KEY / GEMINI_API_KEYS missing - cannot transcribe audio")
         return []
+    print(f"[i] {len(keys)} Gemini key(s) configured", flush=True)
 
     src_tmpl = workdir / "audio_src"
 
@@ -171,7 +175,8 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
     chunks = sorted(workdir.glob("chunk_*.mp3"))
     print(f"[i] Split into {len(chunks)} chunks", flush=True)
     print(f"[i] Transcribing {len(chunks)} audio chunks with Gemini")
-    client = genai.Client(api_key=api_key)
+    cur_key = next_usable_key() or keys[0]
+    client = make_client(cur_key)
     segments: list[dict] = []
 
     prompt = (
@@ -188,9 +193,12 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
         json_cfg = None
     for idx, chunk in enumerate(chunks):
         offset = idx * AUDIO_CHUNK_SEC
-        for attempt in range(3):
+        for attempt in range(3 + len(keys)):  # extra attempts so a key switch is not "wasted"
             try:
+                print(f"[i] chunk {idx + 1}/{len(chunks)} attempt {attempt + 1}: uploading...", flush=True)
                 up = client.files.upload(file=str(chunk))
+                wait_file_active(client, up)
+                print(f"[i] chunk {idx + 1}/{len(chunks)}: transcribing...", flush=True)
                 resp = gemini_generate(client, [prompt, up], config=json_cfg)
                 try:
                     client.files.delete(name=up.name)
@@ -214,7 +222,13 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
                         })
                 break
             except GeminiQuotaExhausted as e:
-                print(f"[!] {e}", flush=True)
+                nxt = next_usable_key(cur_key)
+                if nxt:
+                    print(f"[!] {e} Switching to {key_label(nxt)} and retrying chunk", flush=True)
+                    cur_key = nxt
+                    client = make_client(cur_key)
+                    continue
+                print(f"[!] {e} No other Gemini key left.", flush=True)
                 for c in chunks[idx:]:
                     c.unlink(missing_ok=True)
                 print(f"[!] Stopping transcription early - partial transcript: {len(segments)} segments", flush=True)

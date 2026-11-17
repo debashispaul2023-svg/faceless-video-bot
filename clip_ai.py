@@ -22,11 +22,77 @@ GEMINI_MODELS = [m for m in [
 _WORKING_MODEL: str | None = None
 
 
+GEMINI_HTTP_TIMEOUT_SEC = int(os.getenv("GEMINI_HTTP_TIMEOUT_SEC", "180"))
+
+
+def make_client(api_key: str):
+    """Gemini client with a hard HTTP timeout so a stuck request can never hang the job."""
+    try:
+        from google.genai import types as _t
+        c = genai.Client(
+            api_key=api_key,
+            http_options=_t.HttpOptions(timeout=GEMINI_HTTP_TIMEOUT_SEC * 1000),
+        )
+    except Exception as e:
+        print(f"[!] Could not set Gemini timeout ({e}); using default client", flush=True)
+        c = genai.Client(api_key=api_key)
+    _CLIENT_KEYS[id(c)] = api_key
+    return c
+
+
+def wait_file_active(client, f, max_wait: int = 120) -> None:
+    """Uploaded files start in PROCESSING; using them early can fail or stall."""
+    start = time.time()
+    while time.time() - start < max_wait:
+        try:
+            cur = client.files.get(name=f.name)
+            state = getattr(getattr(cur, "state", None), "name", None) or str(getattr(cur, "state", ""))
+            if "ACTIVE" in state or not state or state == "None":
+                return
+            if "FAILED" in state:
+                raise RuntimeError(f"uploaded file processing failed: {state}")
+        except RuntimeError:
+            raise
+        except Exception:
+            return  # can't query state: just proceed
+        time.sleep(3)
+
+
 class GeminiQuotaExhausted(RuntimeError):
     """Every configured Gemini model has hit its daily quota."""
 
 
-_EXHAUSTED_MODELS: set[str] = set()
+_EXHAUSTED_MODELS: dict[str, set[str]] = {}   # api_key -> models out of quota / unavailable
+_CLIENT_KEYS: dict[int, str] = {}              # id(client) -> api_key
+
+
+def get_api_keys() -> list[str]:
+    """Keys from GEMINI_API_KEYS (comma/newline separated) plus GEMINI_API_KEY, de-duplicated."""
+    raw = os.getenv("GEMINI_API_KEYS", "") + "," + os.getenv("GEMINI_API_KEY", "")
+    keys: list[str] = []
+    for k in raw.replace("\n", ",").split(","):
+        k = k.strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys
+
+
+def key_label(key: str) -> str:
+    return f"key ...{key[-4:]}"
+
+
+def key_is_exhausted(key: str) -> bool:
+    return all(m in _EXHAUSTED_MODELS.get(key, set()) for m in GEMINI_MODELS)
+
+
+def next_usable_key(after_key: str | None = None) -> str | None:
+    """Next key (in order, after `after_key`) that still has a usable model."""
+    keys = get_api_keys()
+    start = keys.index(after_key) + 1 if after_key in keys else 0
+    for k in keys[start:] + keys[:start]:
+        if k != after_key and not key_is_exhausted(k):
+            return k
+    return None
 
 
 def _is_daily_quota(msg: str) -> bool:
@@ -57,16 +123,17 @@ def gemini_generate(client, contents, config=None):
     - all models out of daily quota  -> GeminiQuotaExhausted (callers should stop, not retry)
     """
     global _WORKING_MODEL
+    key = _CLIENT_KEYS.get(id(client), "")
+    dead = _EXHAUSTED_MODELS.setdefault(key, set())
     last = None
     for rnd in range(TRANSIENT_ROUNDS):
-        candidates = [m for m in GEMINI_MODELS if m not in _EXHAUSTED_MODELS]
+        candidates = [m for m in GEMINI_MODELS if m not in dead]
         if _WORKING_MODEL in candidates:  # known-good model first
             candidates.remove(_WORKING_MODEL)
             candidates.insert(0, _WORKING_MODEL)
         if not candidates:
             raise GeminiQuotaExhausted(
-                "All Gemini models are out of daily quota. Wait for the reset (midnight Pacific "
-                "time), enable billing on the API key, or set GEMINI_MODEL to a model with quota."
+                f"Gemini {key_label(key) if key else 'key'}: all models out of daily quota/unavailable."
             ) from last
         transient_seen = False
         for m in candidates:
@@ -84,11 +151,11 @@ def gemini_generate(client, contents, config=None):
                 msg = str(e)
                 if "404" in msg or "NOT_FOUND" in msg or "no longer available" in msg:
                     print(f"[!] Model {m} unavailable - trying next", flush=True)
-                    _EXHAUSTED_MODELS.add(m)
+                    dead.add(m)
                     continue
                 if _is_daily_quota(msg):
                     print(f"[!] Model {m} daily quota exhausted - trying next model", flush=True)
-                    _EXHAUSTED_MODELS.add(m)
+                    dead.add(m)
                     continue
                 if _is_transient(msg):
                     transient_seen = True
@@ -181,16 +248,31 @@ Rules:
 Transcript (sampled):
 {sampled}
 """
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        print("[!] GEMINI_API_KEY missing — cannot select clips")
+    keys = get_api_keys()
+    if not keys:
+        print("[!] GEMINI_API_KEY / GEMINI_API_KEYS missing - cannot select clips")
         return []
-    try:
-        client = genai.Client(api_key=api_key)
-        resp = gemini_generate(client, prompt)
-        text = (resp.text or "").strip()
-    except Exception as e:
-        print(f"[!] Gemini API failure: {e}")
+    text = ""
+    last_err: Exception | None = None
+    key = next_usable_key() or keys[0]
+    tried: set[str] = set()
+    while key and key not in tried:
+        tried.add(key)
+        try:
+            client = make_client(key)
+            resp = gemini_generate(client, prompt)
+            text = (resp.text or "").strip()
+            break
+        except GeminiQuotaExhausted as e:
+            last_err = e
+            nxt = next_usable_key(key)
+            print(f"[!] {e}" + (f" Switching to {key_label(nxt)}" if nxt else ""), flush=True)
+            key = nxt
+        except Exception as e:
+            last_err = e
+            break
+    if not text:
+        print(f"[!] Gemini API failure: {last_err}")
         return []
 
     if "```json" in text:
