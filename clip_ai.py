@@ -8,34 +8,76 @@ from clip_core import MAX_TRANSCRIPT_CHARS_FOR_AI, WINDOWS_TO_SAMPLE, WINDOW_SEC
 
 GEMINI_MODELS = [m for m in [
     os.getenv("GEMINI_MODEL", "").strip(),
-    "gemini-3.8-flash",
+    # Gemini 3 family first (unknown/retired IDs just 404 and are skipped)
+    "gemini-3.8-flash",       # named by the API itself in a 404 message
+    "gemini-3-flash-preview",
+    "gemini-3-flash",
+    "gemini-3.0-flash",
+    "gemini-3-pro-preview",
+    # older fallbacks
     "gemini-2.5-flash",
     "gemini-2.0-flash",
 ] if m]
-
-
 _WORKING_MODEL: str | None = None
 
 
+class GeminiQuotaExhausted(RuntimeError):
+    """Every configured Gemini model has hit its daily quota."""
+
+
+_EXHAUSTED_MODELS: set[str] = set()
+
+
+def _is_daily_quota(msg: str) -> bool:
+    low = msg.lower()
+    return ("429" in low or "resource_exhausted" in low) and any(
+        k in low for k in ("perday", "per day", "per_day", "daily")
+    )
+
+
 def gemini_generate(client, contents):
-    """generate_content with automatic fallback across model names on 404/not found."""
+    """generate_content with automatic fallback across models.
+
+    - 404 / retired model            -> try next model
+    - 429 with a DAILY quota message -> mark that model exhausted, try next model
+    - other 429 (per-minute)         -> raised so the caller can wait and retry
+    - all models exhausted           -> GeminiQuotaExhausted (callers should stop, not retry)
+    """
     global _WORKING_MODEL
-    models = [_WORKING_MODEL] if _WORKING_MODEL else GEMINI_MODELS
+    candidates = [m for m in GEMINI_MODELS if m not in _EXHAUSTED_MODELS]
+    if _WORKING_MODEL in candidates:  # try the known-good model first
+        candidates.remove(_WORKING_MODEL)
+        candidates.insert(0, _WORKING_MODEL)
+    if not candidates:
+        raise GeminiQuotaExhausted(
+            "All Gemini models are out of daily quota. Wait for the reset (midnight Pacific "
+            "time), enable billing on the API key, or set GEMINI_MODEL to a model with quota."
+        )
     last = None
-    for m in models:
+    for m in candidates:
         try:
             resp = client.models.generate_content(model=m, contents=contents)
             if _WORKING_MODEL != m:
-                print(f"[i] Using Gemini model: {m}")
+                print(f"[i] Using Gemini model: {m}", flush=True)
             _WORKING_MODEL = m
             return resp
         except Exception as e:
             last = e
             msg = str(e)
             if "404" in msg or "NOT_FOUND" in msg or "no longer available" in msg:
-                print(f"[!] Model {m} unavailable - trying next")
+                print(f"[!] Model {m} unavailable - trying next", flush=True)
+                _EXHAUSTED_MODELS.add(m)
+                continue
+            if _is_daily_quota(msg):
+                print(f"[!] Model {m} daily quota exhausted - trying next model", flush=True)
+                _EXHAUSTED_MODELS.add(m)
                 continue
             raise
+    if all(m in _EXHAUSTED_MODELS for m in GEMINI_MODELS):
+        raise GeminiQuotaExhausted(
+            "All Gemini models are out of daily quota. Wait for the reset (midnight Pacific "
+            "time), enable billing on the API key, or set GEMINI_MODEL to a model with quota."
+        ) from last
     raise last if last else RuntimeError("no Gemini model available")
 
 
@@ -110,12 +152,12 @@ Rules:
      (voiceover = narrator sets up the moment; text_story = on-screen text tells the story;
       comparison = frame it as GTA 6 vs GTA 5 / expectation vs reality),
   "voiceover": 1-2 short sentences (max 20 words) a narrator says BEFORE the action to set up why it matters,
-     in {VO_LANG}. Add real commentary, never just describe what is visible,
+     in {VOICEOVER_LANGUAGE}. Add real commentary, never just describe what is visible,
   "spoiler": true or false.
 
 Transcript (sampled):
 {sampled}
-""".replace("{VO_LANG}", VOICEOVER_LANGUAGE)
+"""
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
         print("[!] GEMINI_API_KEY missing — cannot select clips")
