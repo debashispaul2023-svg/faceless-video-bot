@@ -7,7 +7,7 @@ import os
 import subprocess
 import time
 import yt_dlp
-from clip_ai import gemini_generate
+from clip_ai import GeminiQuotaExhausted, gemini_generate
 from clip_core import ExtractionAuthError, ExtractionNetworkError, ExtractionRateLimitError, _ydl_opts, extract_id_from_url, run_extraction
 
 
@@ -90,7 +90,7 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
     return run_extraction(url, _do, "download_transcript")
 
 
-AUDIO_CHUNK_SEC = 600
+AUDIO_CHUNK_SEC = 1200  # fewer, longer chunks = fewer API calls (free tier is request-limited)
 
 
 MAX_AUDIO_MINUTES = int(os.getenv("MAX_AUDIO_MINUTES", "240"))
@@ -187,6 +187,12 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
                             "text": txt,
                         })
                 break
+            except GeminiQuotaExhausted as e:
+                print(f"[!] {e}", flush=True)
+                for c in chunks[idx:]:
+                    c.unlink(missing_ok=True)
+                print(f"[!] Stopping transcription early - partial transcript: {len(segments)} segments", flush=True)
+                return segments
             except Exception as e:
                 print(f"[!] chunk {idx + 1}/{len(chunks)} attempt {attempt + 1} failed: {e}")
                 time.sleep(10 * (attempt + 1))
