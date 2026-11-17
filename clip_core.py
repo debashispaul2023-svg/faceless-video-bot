@@ -79,8 +79,20 @@ def _resolve_cookiefile() -> str | None:
     return str(tmp)
 
 
+# Set to True after the pinned player clients fail: lets yt-dlp use its own
+# up-to-date default client list (maintainers keep those current).
+_USE_DEFAULT_CLIENTS = False
+
+
 def _ydl_opts(**extra) -> dict:
     opts = {**YDL_BASE, **extra}
+    # Metadata/caption lookups must not die just because no media format is offered.
+    if extra.get("skip_download"):
+        opts["ignore_no_formats_error"] = True
+    if _USE_DEFAULT_CLIENTS:
+        ea = {k: dict(v) for k, v in (opts.get("extractor_args") or {}).items()}
+        ea.get("youtube", {}).pop("player_client", None)
+        opts["extractor_args"] = ea
     cookiefile = _resolve_cookiefile()
     if cookiefile:
         opts["cookiefile"] = cookiefile
@@ -212,6 +224,15 @@ def run_extraction(url: str, attempt_fn, description: str = "operation"):
             if kind == "rate_limit":
                 send_diagnostic_email(url, str(e), kind="rate_limit")
                 raise ExtractionRateLimitError(str(e)) from e
+            msg = str(e).lower()
+            if (not _USE_DEFAULT_CLIENTS and attempt < NETWORK_RETRIES and any(
+                k in msg for k in ("requested format is not available",
+                                   "only images are available",
+                                   "failed to extract any player response")
+            )):
+                globals()["_USE_DEFAULT_CLIENTS"] = True
+                print("[i] Retrying with yt-dlp default player clients")
+                continue
             if kind == "network" and attempt < NETWORK_RETRIES:
                 delay = NETWORK_BACKOFF_SEC * (attempt + 1)
                 print(f"[i] Network error — retry {attempt + 1}/{NETWORK_RETRIES} in {delay}s")
