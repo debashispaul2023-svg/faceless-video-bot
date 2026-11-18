@@ -154,8 +154,17 @@ def _wrap_hook(text: str, width: int = 18) -> str:
 def write_karaoke_ass(words: list[dict], ass_path: Path, hook_text: str = "",
                       layout: str = "blur", clip_duration: float | None = None) -> int:
     """Write the ASS file. Returns number of caption events written."""
+    font, size, hl, bold = FONT, FONT_SIZE, HIGHLIGHT, -1
+    cap_align, outline, shadow, pop, pos = 2, 7, 3, 118, ""
     if layout == "blur":
         cap_margin_v, hook_margin_v = 360, 330
+    elif layout == "facecam":
+        # Facecam on top (y 0-400); captions sit in the open space just below the seam.
+        font = os.getenv("CLIP_FONT") or "Montserrat ExtraBold"
+        size = int(os.getenv("CLIP_FONT_SIZE") or 72)
+        hl, bold, cap_align, shadow, pop = "&H0000E5FF&", 0, 5, 0, 115   # #FFE500
+        cap_margin_v, hook_margin_v = 0, 430
+        pos = "{\\pos(540," + os.getenv("CLIP_CAPTION_Y", "825") + ")}"
     else:  # crop (fullscreen gameplay)
         cap_margin_v, hook_margin_v = 480, 260
 
@@ -169,7 +178,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,{FONT},{FONT_SIZE},{WHITE},{WHITE},&H00000000&,&H64000000&,-1,0,0,0,100,100,0,0,1,7,3,2,50,50,{cap_margin_v},1
+Style: Cap,{font},{size},{WHITE},{WHITE},&H00000000&,&H64000000&,{bold},0,0,0,100,100,0,0,1,{outline},{shadow},{cap_align},50,50,{cap_margin_v},1
 Style: Hook,{FONT},74,{HOOK_COLOR},{HOOK_COLOR},&H00000000&,&H64000000&,-1,0,0,0,100,100,0,0,1,7,3,8,60,60,{hook_margin_v},1
 
 [Events]
@@ -205,12 +214,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 txt = x["w"].upper()
                 if j == wi:
                     parts.append(
-                        f"{{\\c{HIGHLIGHT}\\fscx118\\fscy118\\t(0,90,\\fscx100\\fscy100)}}{txt}{{\\r}}"
+                        f"{{\\c{hl}\\fscx{pop}\\fscy{pop}\\t(0,90,\\fscx100\\fscy100)}}{txt}{{\\r}}"
                     )
                 else:
                     parts.append(f"{{\\c{WHITE}}}{txt}")
             out.append(
-                f"Dialogue: 0,{_ass_time(w_start)},{_ass_time(w_end)},Cap,,0,0,0,,{' '.join(parts)}\n"
+                f"Dialogue: 0,{_ass_time(w_start)},{_ass_time(w_end)},Cap,,0,0,0,,{pos}{' '.join(parts)}\n"
             )
             n_events += 1
     ass_path.write_text("".join(out), encoding="utf-8")

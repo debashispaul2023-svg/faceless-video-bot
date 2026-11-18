@@ -71,6 +71,9 @@ clipper.py --auto
 ### Layout (`CLIP_LAYOUT`)
 - `blur` (default): 16:9 gameplay puro ta majhkhane, upore-niche oi video-ei blurred version. Kono action kete jay na, caption er jonno jaiga thake.
 - `crop`: fullscreen 9:16, gameplay er majhkhaner ongsho kete nei. Beshi "immersive" kintu duidik er action hariye jay.
+- `facecam`: 1080×1920. Upore (y 0–400) facecam boro kore (620×400), tar niche 3:4 gameplay (1080×1440, y=400 theke), puro canvas e blur + ektu dark gameplay background. Caption `\pos(540,825)` e, Montserrat ExtraBold 72, white + kalo outline, bola word ta `#FFE500` hoye pop kore. Hook text facecam er thik niche boshe. Audio/video PTS 0 e reset kora (`setpts` + `aresample=async=1:first_pts=0`). NVIDIA GPU thakle `h264_nvenc`, na thakle `libx264 veryfast`.
+  - Facecam kon kone ta `CLIP_FACECAM="x,y,w,h"` diye dao (frame er fraction, default top-right `0.74,0,0.26,0.26`).
+  - Workflow te: Run workflow → `layout = facecam`, `facecam_box`, `live_from_start`, `cleanup` input gulo ache.
 
 ### Onno edit
 - **Hook text**: prothom ~3 second upore likhe (Gemini likhe, max 6 word, curiosity line).
@@ -173,7 +176,11 @@ Yt-dlp er jonno **Deno** lagte pare (JS challenge). Actions e workflow nijei ins
 | `CLIP_MIN_MINUTES` | `20` | Er cheye choto video skip |
 | `CLIP_MAX_AGE_VIDEOS` | `15` | Protita channel er koto ta recent video dekhbe |
 | `CLIP_QUEUE_DAYS` | `7` | Koto din er Short age thekei scheduled rakhbe |
-| `CLIP_LAYOUT` | `blur` | `blur` / `crop` |
+| `CLIP_LAYOUT` | `blur` | `blur` / `crop` / `facecam` |
+| `CLIP_FACECAM` | `0.74,0,0.26,0.26` | Facecam box `x,y,w,h` (frame er fraction), shudhu `facecam` layout e |
+| `CLIP_CAPTION_Y` | `825` | `facecam` layout e caption er Y position |
+| `CLIP_LIVE_FROM_START` | `0` | `1` = stream ekhono live, shuru theke porbe (yt-dlp `--live-from-start`) |
+| `CLIP_CLEANUP` | `0` | `1` = clip banano shesh e raw/ass/json/transcript muche, shudhu `short_*.mp4` rakhe |
 | `CLIP_HEURISTIC_FALLBACK` | `1` | Gemini kono clip na dile transcript er hype word/energy dekhe nijei pick kore. `0` = bondho |
 | `CLIP_ZOOM_AMOUNT` | `0.14` | Max zoom (0.14 = 114%) |
 | `CLIP_ZOOM_PERIOD` | `5` | Ek zoom in+out cycle koto second |

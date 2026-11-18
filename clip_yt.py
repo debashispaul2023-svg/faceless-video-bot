@@ -271,6 +271,8 @@ def download_segment(url: str, start: float, end: float, out_path: Path) -> bool
             force_keyframes_at_cuts=True,   # frame-accurate cut start/end
             merge_output_format="mp4",
         )
+        if os.getenv("CLIP_LIVE_FROM_START", "0") == "1":
+            opts["live_from_start"] = True   # stream still live: read it from the beginning
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
         if out_path.exists():

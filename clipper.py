@@ -30,6 +30,7 @@ VOICEOVER_ENABLED = os.getenv("CLIP_VOICEOVER", "0") == "1"   # narrator needs E
 TIME_BUDGET_SEC = int(os.getenv("CLIP_TIME_BUDGET_MIN", "80")) * 60   # stop making new clips after this
 MAX_UPLOADS_PER_RUN = int(os.getenv("CLIP_MAX_UPLOADS_PER_RUN", "4"))  # YouTube API quota: ~1,600 units per upload (10,000/day)
 _LAST_SCHEDULED = 0   # how many clips the last process_url() really scheduled on YouTube
+CLEANUP = os.getenv("CLIP_CLEANUP", "0") == "1"                 # keep only the finished short_*.mp4 files
 MIN_LEN, MAX_LEN = 30.0, 40.0                                  # target Short length (seconds)
 
 
@@ -41,6 +42,14 @@ def _fit_length(start: float, end: float) -> tuple[float, float]:
     elif dur < MIN_LEN - 2:
         end = start + MIN_LEN + 2
     return start, end
+
+
+def _cleanup_workdir(workdir: Path) -> None:
+    """Delete raw cuts, subtitles, transcripts, meta and voiceover files; keep short_*.mp4 only."""
+    for p in workdir.iterdir():
+        if p.is_file() and not (p.name.startswith("short_") and p.suffix == ".mp4"):
+            p.unlink(missing_ok=True)
+    print("[+] Workspace cleaned - only the finished Shorts remain")
 
 
 def process_url(url: str, max_clips: int = 10, schedule: bool = True,
@@ -167,6 +176,8 @@ def process_url(url: str, max_clips: int = 10, schedule: bool = True,
                 print(f"[!] Upload/schedule failed (clip file preserved): {e}")
 
     print(f"[+] Produced {len(produced)} Shorts")
+    if CLEANUP and produced:
+        _cleanup_workdir(workdir)
     return produced
 
 

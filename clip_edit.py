@@ -5,6 +5,7 @@ import config
 import os
 import random
 import requests
+import shutil
 import subprocess
 
 from clip_captions import words_from_segments, words_from_whisper, write_karaoke_ass
@@ -57,7 +58,23 @@ def assign_styles(clips: list[dict]) -> None:
 
 # --------------------------------------------------------------------------- settings
 
-LAYOUT = os.getenv("CLIP_LAYOUT", "blur").strip().lower()      # blur | crop
+LAYOUT = os.getenv("CLIP_LAYOUT", "blur").strip().lower()      # blur | crop | facecam
+
+
+def _parse_facecam() -> tuple[float, float, float, float]:
+    """CLIP_FACECAM="x,y,w,h" as fractions of the source frame (default: top-right corner)."""
+    try:
+        x, y, w, h = (float(v) for v in os.getenv("CLIP_FACECAM", "0.74,0,0.26,0.26").split(","))
+        if w > 0 and h > 0:
+            return x, y, w, h
+    except Exception:
+        pass
+    return 0.74, 0.0, 0.26, 0.26
+
+
+FACECAM_BOX = _parse_facecam()
+# Rule A: reset audio PTS to 0 and resample in sync (facecam layout only).
+AUDIO_SYNC = "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0" if LAYOUT == "facecam" else ""
 ZOOM_AMOUNT = float(os.getenv("CLIP_ZOOM_AMOUNT", "0.14"))      # 0.14 = zoom up to 114%
 ZOOM_PERIOD = float(os.getenv("CLIP_ZOOM_PERIOD", "5"))         # seconds per zoom-in + zoom-out
 USE_SFX = os.getenv("CLIP_SFX", "1") != "0"
@@ -132,6 +149,21 @@ def _video_graph(src_w: int, src_h: int, ass_path: Path) -> str:
     """filter_complex fragment that turns input 0 into [vout] (1080x1920, zoom + captions)."""
     z = _zoom_expr()
     ass = _ff_path(ass_path)
+    if LAYOUT == "facecam":
+        # Facecam enlarged on top (620x400), 3:4 gameplay below (1080x1440 at y=400),
+        # blurred + darkened gameplay fills the whole 1080x1920 canvas.
+        fx, fy, fw, fh = FACECAM_BOX
+        return (
+            f"[0:v]fps=30,split=3[b][g][f];"
+            f"[b]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
+            f"crop={OUT_W}:{OUT_H},boxblur=25:2,eq=brightness=-0.15[bg];"
+            f"[g]crop=ih*3/4:ih,scale={OUT_W}:1440,setsar=1[gp];"
+            f"[f]crop=iw*{fw}:ih*{fh}:iw*{fx}:ih*{fy},"
+            f"scale=620:400:force_original_aspect_ratio=increase,crop=620:400[fc];"
+            f"[bg][gp]overlay=0:400[t1];"
+            f"[t1][fc]overlay=(W-w)/2:0[t2];"
+            f"[t2]setpts=PTS-STARTPTS,ass='{ass}'[vout]"
+        )
     if LAYOUT == "crop":
         # Fullscreen: fill 9:16 with the centre of the gameplay, zoom in/out on top.
         return (
@@ -169,7 +201,8 @@ def _audio_graph(has_audio: bool, has_vo: bool, sfx_path: Path | None, duration:
     chains: list[str] = []
     mix: list[str] = []
     if has_audio:
-        chains.append(f"[0:a]volume={0.35 if has_vo else 1.0}[main]")
+        pre = AUDIO_SYNC + "," if AUDIO_SYNC else ""
+        chains.append(f"[0:a]{pre}volume={0.35 if has_vo else 1.0}[main]")
         mix.append("[main]")
     if has_vo:
         chains.append(f"[{vo_index}:a]volume=1.4[vo]")
@@ -187,6 +220,20 @@ def _audio_graph(has_audio: bool, has_vo: bool, sfx_path: Path | None, duration:
         return None
     chains.append(f"{''.join(mix)}amix=inputs={len(mix)}:duration=first:normalize=0:dropout_transition=0[aout]")
     return ";".join(chains), "[aout]"
+
+
+def _video_encoder() -> list[str]:
+    """NVENC when an NVIDIA GPU is usable, otherwise libx264 veryfast."""
+    try:
+        if shutil.which("nvidia-smi"):
+            subprocess.run(["nvidia-smi"], check=True, capture_output=True)
+            enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                                 capture_output=True, text=True).stdout
+            if "h264_nvenc" in enc:
+                return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "21"]
+    except Exception:
+        pass
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
 
 
 def _edit_clip_fallback(src: Path, dest: Path, ass_path: Path) -> bool:
@@ -240,7 +287,7 @@ def edit_clip(src: Path, dest: Path, captions: list[dict], zoom: bool = True,
         sfx_index = idx
         idx += 1
 
-    graph = _video_graph(src_w, src_h, ass_path) if zoom else (
+    graph = _video_graph(src_w, src_h, ass_path) if (zoom or LAYOUT == "facecam") else (
         f"[0:v]fps=30,scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
         f"crop={OUT_W}:{OUT_H},ass='{_ff_path(ass_path)}'[vout]"
     )
@@ -254,8 +301,10 @@ def edit_clip(src: Path, dest: Path, captions: list[dict], zoom: bool = True,
         cmd += ["-map", audio[1]]
     elif has_audio:
         cmd += ["-map", "0:a"]
-    cmd += [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+        if AUDIO_SYNC:
+            cmd += ["-af", AUDIO_SYNC]
+    cmd += _video_encoder() + [
+        "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
     ]
     if duration:
