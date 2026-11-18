@@ -4,21 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "clip | demo | plan | episode"
+        description: "auto (pick next stream from channels) | clip (use video_url)"
         required: true
-        default: "clip"
+        default: "auto"
         type: choice
         options:
+          - auto
           - clip
-          - demo
-          - plan
-          - episode
       video_url:
         description: "YouTube live/VOD URL (for clip mode)"
-        required: false
-        default: ""
-      idea:
-        description: "Original story idea (episode mode — legacy)"
         required: false
         default: ""
       upload:
@@ -27,18 +21,17 @@ on:
         default: true
         type: boolean
       max_clips:
-        description: "How many best clips to produce (clip mode)"
+        description: "How many best clips to produce (blank = fill the 7-day queue)"
         required: false
-        default: "10"
+        default: ""
   schedule:
-    # Cron does not supply video_url — clip mode will skip cleanly.
-    # Use workflow_dispatch for clipping.
+    # Daily: tops up the YouTube schedule queue (1 Short/day) from the newest unprocessed GTA 6 stream.
     - cron: "0 8 * * *"
 
 jobs:
   produce:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     permissions:
       contents: write
 
@@ -61,7 +54,7 @@ jobs:
       - name: Install system packages (ffmpeg, fonts)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          sudo apt-get install -y ffmpeg fonts-dejavu-core fontconfig
 
       - name: Install Python packages
         run: |
@@ -87,6 +80,7 @@ jobs:
           fi
 
       - name: Run pipeline
+        timeout-minutes: 110
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
@@ -101,14 +95,21 @@ jobs:
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           YOUTUBE_COOKIES_FILE: cookies.txt
           # GITHUB_* provided by Actions for diagnostic email run URL
+          CLIP_CHANNELS: ${{ vars.CLIP_CHANNELS || '@IShowSpeed,@MrBeast' }}
+          CLIP_TITLE_KEYWORDS: ${{ vars.CLIP_TITLE_KEYWORDS || 'gta' }}
+          CLIP_LAYOUT: ${{ vars.CLIP_LAYOUT || 'blur' }}
+          # workflow inputs go through env (never interpolated into the shell script)
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+          INPUT_URL: ${{ github.event.inputs.video_url }}
+          INPUT_MAX: ${{ github.event.inputs.max_clips }}
+          INPUT_UPLOAD: ${{ github.event.inputs.upload }}
         run: |
           set -e
-          MODE="${{ github.event.inputs.mode || 'clip' }}"
-          URL="${{ github.event.inputs.video_url || '' }}"
-          IDEA="${{ github.event.inputs.idea || '' }}"
-          MAX="${{ github.event.inputs.max_clips || '10' }}"
+          MODE="${INPUT_MODE:-auto}"
+          URL="${INPUT_URL:-}"
+          MAX="${INPUT_MAX:-}"
           # workflow_dispatch boolean may be string; schedule has no inputs
-          UPLOAD_RAW="${{ github.event.inputs.upload }}"
+          UPLOAD_RAW="${INPUT_UPLOAD:-}"
           if [ -z "$UPLOAD_RAW" ] || [ "$UPLOAD_RAW" = "true" ]; then
             UPLOAD="true"
           else
@@ -122,26 +123,29 @@ jobs:
             echo "[i] cookiefile path set (not printing contents)"
           fi
 
-          if [ "$MODE" = "clip" ]; then
-            if [ -z "$URL" ]; then
-              echo "No video_url for clip mode (cron or empty input). Skipping successfully."
-              exit 0
-            fi
-            if [ "$UPLOAD" = "true" ]; then
-              python main.py --clip-url "$URL" --max-clips "$MAX" --upload
-            else
-              python main.py --clip-url "$URL" --max-clips "$MAX"
-            fi
-          elif [ "$MODE" = "demo" ]; then
-            python main.py --demo
-          elif [ "$MODE" = "plan" ]; then
-            python main.py --plan-only --idea "$IDEA"
+          if [ "$MODE" = "auto" ]; then
+            ARGS=""
+            if [ "$UPLOAD" = "true" ]; then ARGS="--upload"; fi
+            if [ -n "$MAX" ]; then ARGS="$ARGS --max-clips $MAX"; fi
+            python clipper.py --auto $ARGS
           else
-            if [ "$UPLOAD" = "true" ]; then
-              python main.py --idea "$IDEA" --upload
-            else
-              python main.py --idea "$IDEA"
+            if [ -z "$URL" ]; then
+              echo "mode=clip needs video_url"; exit 1
             fi
+            ARGS=""
+            if [ "$UPLOAD" = "true" ]; then ARGS="--upload"; fi
+            python clipper.py "$URL" --max-clips "${MAX:-10}" $ARGS
+          fi
+
+      - name: Remember processed streams
+        if: success()
+        run: |
+          if [ -n "$(git status --porcelain assets/processed_streams.json)" ]; then
+            git config user.name "clip-bot"
+            git config user.email "clip-bot@users.noreply.github.com"
+            git add assets/processed_streams.json
+            git commit -m "chore: mark stream as clipped [skip ci]"
+            git push
           fi
 
       - name: Upload produced clips artifact
