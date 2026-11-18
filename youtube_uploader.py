@@ -66,35 +66,71 @@ def authenticate_youtube():
         raise YouTubeAuthError(f"OAuth refresh failed: {type(e).__name__}") from e
 
 
-def find_next_available_slots(count: int = 1):
-    """Return list of (day_offset, hour, minute) for next free DAILY_SLOTS."""
-    youtube = authenticate_youtube()
-    now = _ist_now()
-    booked = {}
-    video_ids = []
+_BOOKED_CACHE: dict = {"t": 0.0, "booked": None}
+
+
+def _list_my_video_ids(youtube, limit: int = 150) -> list[str]:
+    """Newest uploads of my channel, incl. private/scheduled.
+
+    Uses the channel's uploads playlist (1 quota unit per call) instead of search.list
+    (100 units per call). Falls back to search.list if the playlist route fails.
+    """
+    try:
+        ch = youtube.channels().list(part="contentDetails", mine=True).execute()
+        uploads = ch["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+        ids: list[str] = []
+        page_token = None
+        while len(ids) < limit:
+            resp = youtube.playlistItems().list(
+                part="contentDetails", playlistId=uploads, maxResults=50, pageToken=page_token,
+            ).execute()
+            ids += [it["contentDetails"]["videoId"] for it in resp.get("items", [])]
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return ids[:limit]
+    except Exception as e:
+        print(f"[i] uploads-playlist lookup failed ({type(e).__name__}); falling back to search.list")
+    ids = []
     page_token = None
     for _ in range(3):
         resp = youtube.search().list(
             part="id", forMine=True, type="video", order="date",
             maxResults=50, pageToken=page_token,
         ).execute()
-        video_ids += [item["id"]["videoId"] for item in resp.get("items", [])]
+        ids += [item["id"]["videoId"] for item in resp.get("items", [])]
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
-    for i in range(0, len(video_ids), 50):
-        batch = video_ids[i : i + 50]
-        if not batch:
-            continue
-        details = youtube.videos().list(part="status,snippet", id=",".join(batch)).execute()
-        for item in details.get("items", []):
-            when_str = item["status"].get("publishAt") or item["snippet"].get("publishedAt")
-            if not when_str:
+    return ids
+
+
+def find_next_available_slots(count: int = 1):
+    """Return list of (day_offset, hour, minute) for next free DAILY_SLOTS."""
+    import copy
+    import time as _time
+    youtube = None
+    now = _ist_now()
+    if _BOOKED_CACHE["booked"] is not None and _time.time() - _BOOKED_CACHE["t"] < 600:
+        booked = copy.deepcopy(_BOOKED_CACHE["booked"])   # reuse: avoids re-querying the API twice per run
+    else:
+        youtube = authenticate_youtube()
+        booked = {}
+        video_ids = _list_my_video_ids(youtube)
+        for i in range(0, len(video_ids), 50):
+            batch = video_ids[i : i + 50]
+            if not batch:
                 continue
-            when = datetime.datetime.fromisoformat(when_str.replace("Z", "+00:00"))
-            if pytz is not None:
-                when = when.astimezone(pytz.timezone("Asia/Kolkata"))
-            booked.setdefault(when.date(), set()).add((when.hour, when.minute))
+            details = youtube.videos().list(part="status,snippet", id=",".join(batch)).execute()
+            for item in details.get("items", []):
+                when_str = item["status"].get("publishAt") or item["snippet"].get("publishedAt")
+                if not when_str:
+                    continue
+                when = datetime.datetime.fromisoformat(when_str.replace("Z", "+00:00"))
+                if pytz is not None:
+                    when = when.astimezone(pytz.timezone("Asia/Kolkata"))
+                booked.setdefault(when.date(), set()).add((when.hour, when.minute))
+        _BOOKED_CACHE["t"], _BOOKED_CACHE["booked"] = _time.time(), copy.deepcopy(booked)
 
     results = []
     day_offset = 0
