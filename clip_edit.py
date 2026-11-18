@@ -7,10 +7,10 @@ import random
 import requests
 import subprocess
 
+from clip_captions import words_from_segments, words_from_whisper, write_karaoke_ass
 
-CLIP_VOICE_ID = os.getenv("CLIP_VOICE_ID") or config.CHARACTER_ELEVENLABS_VOICES.get(
-    "narrator", "ErXwobaYiN019PkySvjV"
-)
+
+CLIP_VOICE_ID = os.getenv("CLIP_VOICE_ID") or config.ELEVENLABS_NARRATOR_VOICE
 
 
 STYLES = ("voiceover", "text_story", "comparison")
@@ -55,60 +55,50 @@ def assign_styles(clips: list[dict]) -> None:
         history.append(st)
 
 
-def _escape_drawtext(text: str) -> str:
-    text = (text or "").replace("\n", " ").strip()
-    if len(text) > 55:
-        text = text[:52].rsplit(" ", 1)[0] + "…"
-    for ch in ("\\", ":", "'", "%"):
-        text = text.replace(ch, "\\" + ch)
-    return text
+# --------------------------------------------------------------------------- settings
+
+LAYOUT = os.getenv("CLIP_LAYOUT", "blur").strip().lower()      # blur | crop
+ZOOM_AMOUNT = float(os.getenv("CLIP_ZOOM_AMOUNT", "0.14"))      # 0.14 = zoom up to 114%
+ZOOM_PERIOD = float(os.getenv("CLIP_ZOOM_PERIOD", "5"))         # seconds per zoom-in + zoom-out
+USE_SFX = os.getenv("CLIP_SFX", "1") != "0"
+OUT_W, OUT_H = 1080, 1920
 
 
-def _ass_time(t: float) -> str:
-    if t < 0:
-        t = 0
-    h = int(t // 3600)
-    m = int((t % 3600) // 60)
-    s = int(t % 60)
-    cs = int(round((t % 1) * 100))
-    if cs >= 100:
-        s += 1
-        cs = 0
-    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
-
-
-def _write_word_highlight_ass(captions: list[dict], ass_path: Path) -> None:
-    header = """[Script Info]
-Title: Short captions
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,DejaVu Sans,48,&H00FFFFFF,&H0000FCFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,1,2,40,40,220,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    lines = [header]
-    for seg in captions:
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        start = float(seg["start"])
-        end = float(seg["end"])
-        dur = max(0.15, end - start)
-        words = text.split()
-        if not words:
-            continue
-        per = max(8, int((dur / len(words)) * 100))
-        karaoke = "".join(f"{{\\k{per}}}{w} " for w in words).strip()
-        lines.append(
-            f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{karaoke}\n"
+def _probe_size(path: Path) -> tuple[int, int]:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+            capture_output=True, text=True, check=True,
         )
-    ass_path.write_text("".join(lines), encoding="utf-8")
+        w, h = r.stdout.strip().split("x")
+        return int(w), int(h)
+    except Exception:
+        return 1920, 1080
+
+
+def _probe_duration(path: Path) -> float:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        return float(r.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _has_audio(path: Path) -> bool:
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+             "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        return bool(r.stdout.strip())
+    except Exception:
+        return False
 
 
 def _find_whoosh() -> Path | None:
@@ -125,133 +115,161 @@ def _find_whoosh() -> Path | None:
     return None
 
 
-def _probe_duration(path: Path) -> float:
-    try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=nw=1:nk=1", str(path)],
-            capture_output=True, text=True, check=True,
+def _ff_path(p: Path) -> str:
+    """Escape a path for use inside an ffmpeg filter argument."""
+    s = str(p).replace("\\", "/")
+    for ch in (":", "'", ",", "[", "]", ";"):
+        s = s.replace(ch, "\\" + ch)
+    return s
+
+
+def _zoom_expr() -> str:
+    """Smooth zoom-in then zoom-out, repeating every ZOOM_PERIOD seconds."""
+    return f"(1+{ZOOM_AMOUNT}*(0.5-0.5*cos(2*PI*t/{ZOOM_PERIOD})))"
+
+
+def _video_graph(src_w: int, src_h: int, ass_path: Path) -> str:
+    """filter_complex fragment that turns input 0 into [vout] (1080x1920, zoom + captions)."""
+    z = _zoom_expr()
+    ass = _ff_path(ass_path)
+    if LAYOUT == "crop":
+        # Fullscreen: fill 9:16 with the centre of the gameplay, zoom in/out on top.
+        return (
+            f"[0:v]fps=30,scale=-2:{OUT_H},"
+            f"scale=w='trunc(iw*{z}/2)*2':h=-2:eval=frame,"
+            f"crop={OUT_W}:{OUT_H}:(iw-{OUT_W})/2:(ih-{OUT_H})/2,setsar=1[v0];"
+            f"[v0]ass='{ass}'[vout]"
         )
-        return float(r.stdout.strip())
-    except Exception:
-        return 0.0
-
-
-def _apply_loop_crossfade(path: Path, duration: float, xfade_d: float = 0.35) -> None:
-    if duration <= xfade_d * 3:
-        return
-    tmp = path.with_name(path.stem + "_loop" + path.suffix)
-    offset = duration - xfade_d
-    fc = (
-        f"[0:v]split=2[v0][v1];"
-        f"[v0]trim=0:{offset},setpts=PTS-STARTPTS[main];"
-        f"[v1]trim={offset}:{duration},setpts=PTS-STARTPTS[end];"
-        f"[main][end]xfade=transition=fade:duration={xfade_d}:offset={offset - xfade_d}[vout]"
+    # blur layout: whole 16:9 gameplay in the middle, blurred copy fills the 9:16 canvas.
+    fg_h = int(round(OUT_W * src_h / src_w / 2)) * 2
+    return (
+        f"[0:v]fps=30,split=2[a][b];"
+        f"[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
+        f"crop={OUT_W}:{OUT_H},boxblur=28:4,eq=brightness=-0.18:saturation=1.15[bg];"
+        f"[b]scale={OUT_W}:{fg_h},"
+        f"scale=w='trunc({OUT_W}*{z}/2)*2':h=-2:eval=frame,"
+        f"crop={OUT_W}:{fg_h}:(iw-{OUT_W})/2:(ih-{fg_h})/2,setsar=1[fg];"
+        f"[bg][fg]overlay=0:(H-h)/2[v0];"
+        f"[v0]ass='{ass}'[vout]"
     )
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(path), "-filter_complex", fc,
-             "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
-             "-crf", "23", "-c:a", "aac", str(tmp)],
-            check=True, capture_output=True,
-        )
-        tmp.replace(path)
-    except Exception as e:
-        print(f"[i] loop crossfade skipped: {e}")
-        tmp.unlink(missing_ok=True)
 
 
-def _edit_clip_fallback(src: Path, dest: Path, captions: list[dict]) -> bool:
-    """Simple 9:16 + basic subtitles if advanced filters fail."""
-    srt = dest.with_suffix(".srt")
-    with srt.open("w", encoding="utf-8") as f:
-        for i, seg in enumerate(captions, 1):
-            def fmt(t):
-                h, m, s = int(t//3600), int((t%3600)//60), int(t%60)
-                ms = int((t%1)*1000)
-                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-            f.write(f"{i}\n{fmt(seg['start'])} --> {fmt(seg['end'])}\n{seg['text']}\n\n")
+def _sfx_times(duration: float) -> list[float]:
+    """Whoosh on the hook and on every second zoom-in."""
+    times, t = [0.0], 2 * ZOOM_PERIOD
+    while t < duration - 1.5 and len(times) < 5:
+        times.append(t)
+        t += 2 * ZOOM_PERIOD
+    return times
+
+
+def _audio_graph(has_audio: bool, has_vo: bool, sfx_path: Path | None, duration: float,
+                 vo_index: int, sfx_index: int) -> tuple[str, str] | None:
+    """Return (filter_complex fragment, output label) or None when plain `-map 0:a` is enough."""
+    chains: list[str] = []
+    mix: list[str] = []
+    if has_audio:
+        chains.append(f"[0:a]volume={0.35 if has_vo else 1.0}[main]")
+        mix.append("[main]")
+    if has_vo:
+        chains.append(f"[{vo_index}:a]volume=1.4[vo]")
+        mix.append("[vo]")
+    if sfx_path is not None:
+        times = _sfx_times(duration)
+        labels = "".join(f"[s{i}]" for i in range(len(times)))
+        chains.append(f"[{sfx_index}:a]volume=0.55,asplit={len(times)}{labels}" if len(times) > 1
+                      else f"[{sfx_index}:a]volume=0.55[s0]")
+        for i, t in enumerate(times):
+            ms = int(t * 1000)
+            chains.append(f"[s{i}]adelay={ms}|{ms}[d{i}]")
+            mix.append(f"[d{i}]")
+    if not mix or (len(mix) == 1 and mix[0] == "[main]"):
+        return None
+    chains.append(f"{''.join(mix)}amix=inputs={len(mix)}:duration=first:normalize=0:dropout_transition=0[aout]")
+    return ";".join(chains), "[aout]"
+
+
+def _edit_clip_fallback(src: Path, dest: Path, ass_path: Path) -> bool:
+    """Plain centre-crop 9:16 + the same karaoke captions, no zoom/SFX."""
     cmd = [
-        "ffmpeg", "-y", "-i", str(src),
-        "-vf", f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles={srt}:force_style='Fontsize=28,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2'",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        str(dest),
+        "ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+        "-vf", f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,crop={OUT_W}:{OUT_H},"
+               f"ass='{_ff_path(ass_path)}'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(dest),
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True)
         return dest.exists()
-    except Exception as e:
-        print(f"[!] Fallback edit failed: {e}")
+    except subprocess.CalledProcessError as e:
+        print(f"[!] Fallback edit failed: {(e.stderr or b'').decode(errors='ignore')[-400:]}")
         return False
 
 
 def edit_clip(src: Path, dest: Path, captions: list[dict], zoom: bool = True,
               hook_text: str = "", voiceover_path: Path | None = None,
               style: str = "text_story") -> bool:
-    """9:16 + optional zoom + word-highlight captions + hook + voiceover mix."""
+    """Raw 16:9 segment -> 1080x1920 Short.
+
+    * karaoke captions (word-level; whisper -> yt word offsets -> even split)
+    * smooth zoom in / zoom out loop
+    * blurred-background layout (default) or fullscreen crop (CLIP_LAYOUT=crop)
+    * hook text for the first ~3s, whoosh SFX on zooms, optional narrator
+    """
+    duration = _probe_duration(src)
+    src_w, src_h = _probe_size(src)
+
+    words = words_from_whisper(src) or words_from_segments(captions)
     ass_path = dest.with_suffix(".ass")
-    _write_word_highlight_ass(captions, ass_path)
+    n = write_karaoke_ass(words, ass_path, hook_text=hook_text, layout=LAYOUT, clip_duration=duration or None)
+    print(f"[i] captions: {n} karaoke events from {len(words)} words")
 
-    # Base video filters
-    vf_parts = []
-    if zoom:
-        vf_parts.append(
-            "zoompan=z='min(zoom+0.0015,1.15)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920"
-        )
-    else:
-        vf_parts.append("scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920")
-    vf_parts.append(f"subtitles={ass_path}")
-
-    # Hook text overlay (first 2.5s)
-    if hook_text:
-        esc = _escape_drawtext(hook_text)
-        vf_parts.append(
-            f"drawtext=text='{esc}':fontsize=42:fontcolor=white:borderw=3:bordercolor=black:"
-            f"x=(w-text_w)/2:y=120:enable='lt(t,2.5)'"
-        )
-
-    vf = ",".join(vf_parts)
+    has_vo = bool(voiceover_path and Path(voiceover_path).is_file())
+    has_audio = _has_audio(src)
+    sfx = _find_whoosh() if USE_SFX else None
 
     inputs = ["-i", str(src)]
-    audio_map = "0:a"
-    filter_complex = None
-
-    if voiceover_path and voiceover_path.is_file():
+    idx = 1
+    vo_index = sfx_index = -1
+    if has_vo:
         inputs += ["-i", str(voiceover_path)]
-        # Mix voiceover over original (ducked)
-        filter_complex = (
-            "[1:a]volume=1.4[vo];"
-            "[0:a]volume=0.35[bg];"
-            "[bg][vo]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-        )
-        audio_map = "[aout]"
+        vo_index = idx
+        idx += 1
+    if sfx is not None:
+        inputs += ["-i", str(sfx)]
+        sfx_index = idx
+        idx += 1
 
-    cmd = ["ffmpeg", "-y"] + inputs
-    if filter_complex:
-        cmd += ["-filter_complex", filter_complex, "-map", "0:v", "-map", audio_map]
-    else:
-        cmd += ["-map", "0:v", "-map", "0:a?"]
-    cmd += [
-        "-vf", vf,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest",
-        str(dest),
+    graph = _video_graph(src_w, src_h, ass_path) if zoom else (
+        f"[0:v]fps=30,scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
+        f"crop={OUT_W}:{OUT_H},ass='{_ff_path(ass_path)}'[vout]"
+    )
+    audio = _audio_graph(has_audio, has_vo, sfx, duration or 40.0, vo_index, sfx_index)
+    filter_complex = graph + (";" + audio[0] if audio else "")
+
+    cmd = ["ffmpeg", "-y", "-loglevel", "error"] + inputs + [
+        "-filter_complex", filter_complex, "-map", "[vout]",
     ]
+    if audio:
+        cmd += ["-map", audio[1]]
+    elif has_audio:
+        cmd += ["-map", "0:a"]
+    cmd += [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+    ]
+    if duration:
+        cmd += ["-t", f"{duration:.2f}"]
+    cmd.append(str(dest))
 
     try:
         subprocess.run(cmd, check=True, capture_output=True)
-        if dest.exists():
-            # Optional loop polish
-            dur = _probe_duration(dest)
-            if dur > 8:
-                _apply_loop_crossfade(dest, dur)
+        if dest.exists() and dest.stat().st_size > 10_000:
             return True
         return False
     except subprocess.CalledProcessError as e:
-        print(f"[!] Edit failed: {(e.stderr or b'').decode(errors='ignore')[-500:]}")
-        return _edit_clip_fallback(src, dest, captions)
+        print(f"[!] Edit failed, trying simple fallback: {(e.stderr or b'').decode(errors='ignore')[-600:]}")
+        return _edit_clip_fallback(src, dest, ass_path)
     except Exception as e:
         print(f"[!] Edit failed: {e}")
-        return _edit_clip_fallback(src, dest, captions)
+        return _edit_clip_fallback(src, dest, ass_path)

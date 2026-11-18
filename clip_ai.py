@@ -59,7 +59,15 @@ def wait_file_active(client, f, max_wait: int = 120) -> None:
 
 
 class GeminiQuotaExhausted(RuntimeError):
-    """Every configured Gemini model has hit its daily quota."""
+    """Every configured Gemini model has hit its daily quota (or the key itself is unusable)."""
+
+
+def _is_bad_key(msg: str) -> bool:
+    low = msg.lower()
+    return any(k in low for k in (
+        "api key not valid", "api_key_invalid", "api key expired", "permission_denied",
+        "permission denied", "has been suspended", "http 403", "403 forbidden", "error code: 403",
+    ))
 
 
 _EXHAUSTED_MODELS: dict[str, set[str]] = {}   # api_key -> models out of quota / unavailable
@@ -153,6 +161,10 @@ def gemini_generate(client, contents, config=None):
                     print(f"[!] Model {m} unavailable - trying next", flush=True)
                     dead.add(m)
                     continue
+                if _is_bad_key(msg):
+                    print(f"[!] {key_label(key) if key else 'key'} rejected by Gemini (invalid/blocked) - rotating", flush=True)
+                    dead.update(GEMINI_MODELS)
+                    raise GeminiQuotaExhausted(f"Gemini {key_label(key) if key else 'key'} invalid/blocked.") from e
                 if _is_daily_quota(msg):
                     print(f"[!] Model {m} daily quota exhausted - trying next model", flush=True)
                     dead.add(m)
@@ -208,7 +220,8 @@ def _sample_transcript_for_ai(transcript: list[dict], max_chars: int = MAX_TRANS
     return text
 
 
-def pick_best_clips(transcript: list[dict], video_title: str = "stream", max_clips: int = 10) -> list[dict]:
+def pick_best_clips(transcript: list[dict], video_title: str = "stream", max_clips: int = 10,
+                    streamer: str = "") -> list[dict]:
     if not transcript:
         return []
     sampled = _sample_transcript_for_ai(transcript)
@@ -218,7 +231,7 @@ def pick_best_clips(transcript: list[dict], video_title: str = "stream", max_cli
     print(f"[i] Transcript spans ~{duration_h:.1f}h, sending sampled text ({len(sampled)} chars) to AI")
 
     prompt = f"""You are an expert GTA 6 / Grand Theft Auto VI YouTube Shorts editor and viral clipper.
-From this transcript of a stream titled "{video_title}" (approx {duration_h:.1f} hours long), pick the {max_clips} BEST moments for viral YouTube Shorts.
+From this transcript of a stream{(" by " + streamer) if streamer else ""} titled "{video_title}" (approx {duration_h:.1f} hours long), pick the {max_clips} BEST moments for viral YouTube Shorts.
 
 Prioritize:
 1. Police chases / wanted chaos
@@ -230,7 +243,8 @@ Prioritize:
 7. Skillful driving/shooting
 
 Rules:
-- Each clip 15–45 seconds (sweet spot 25–40s). Clear HOOK in first 1–2s and PAYOFF before end.
+- Each clip MUST be 30–40 seconds long (end - start between 30 and 40). Clear HOOK in first 1–2s and PAYOFF before end.
+- Start a second or two BEFORE the key action so the setup is understood; end right after the payoff/reaction.
 - Open on action/reaction — never quiet driving or menus.
 - Spread across the stream (early/mid/late).
 - Titles search-friendly, prefer starting with "GTA 6".
@@ -248,48 +262,223 @@ Rules:
 Transcript (sampled):
 {sampled}
 """
+    ai_clips = _ask_for_clips(prompt, transcript, max_clips)
+    if ai_clips:
+        return ai_clips[:max_clips]
+    if os.getenv("CLIP_HEURISTIC_FALLBACK", "1") != "0":
+        print("[!] AI gave no usable clips - falling back to keyword/energy based picking "
+              "(set CLIP_HEURISTIC_FALLBACK=0 to disable)", flush=True)
+        return heuristic_clips(transcript, max_clips)
+    return []
+
+
+# --------------------------------------------------------------------------- parsing helpers
+
+def parse_json_array(text: str) -> list:
+    """Parse a JSON array from model output. Handles ```fences```, {"clips": [...]}, and truncated output."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text
+        text = text.rsplit("```", 1)[0]
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            for v in data.values():
+                if isinstance(v, list):
+                    return v
+            return []
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    start = text.find("[")
+    if start == -1:
+        return []
+    end = text.rfind("]")
+    try:
+        if end > start:
+            return json.loads(text[start:end + 1])
+    except Exception:
+        pass
+    cut = text.rfind("}")
+    while cut > start:            # truncated output: keep every complete {...} object
+        try:
+            return json.loads(text[start:cut + 1] + "]")
+        except Exception:
+            cut = text.rfind("}", start, cut)
+    return []
+
+
+def to_seconds(v) -> float | None:
+    """123, "123.5", "12:34", "1:02:03" -> seconds."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    t = str(v).strip().lower().rstrip("s").strip()
+    if not t:
+        return None
+    try:
+        if ":" in t:
+            parts = [float(p) for p in t.split(":")]
+            sec = 0.0
+            for p in parts:
+                sec = sec * 60 + p
+            return sec
+        return float(t)
+    except ValueError:
+        return None
+
+
+def _normalize_clip(c) -> dict | None:
+    if not isinstance(c, dict):
+        return None
+    def first(*keys):
+        for k in keys:
+            if k in c and c[k] not in (None, ""):
+                return c[k]
+        return None
+    st = to_seconds(first("start", "start_time", "start_seconds", "begin"))
+    en = to_seconds(first("end", "end_time", "end_seconds", "stop"))
+    if en is None and st is not None:
+        d = to_seconds(first("duration", "length"))
+        en = st + d if d else None
+    if st is None or en is None or en <= st:
+        return None
+    out = dict(c)
+    out["start"], out["end"] = st, en
+    return out
+
+
+def _overlap_ratio(a: dict, b: dict) -> float:
+    inter = min(a["end"], b["end"]) - max(a["start"], b["start"])
+    return max(0.0, inter) / max(1.0, min(a["end"] - a["start"], b["end"] - b["start"]))
+
+
+def _clean_clips(items: list, transcript: list[dict], max_clips: int) -> list[dict]:
+    t0, t1 = transcript[0]["start"], transcript[-1]["end"]
+    norm = [n for n in (_normalize_clip(c) for c in items) if n]
+    print(f"[i] AI returned {len(items)} item(s), {len(norm)} had valid start/end", flush=True)
+    inside = []
+    for c in norm:
+        if c["end"] < t0 - 5 or c["start"] > t1 + 5:
+            continue
+        c["start"] = max(c["start"], t0)
+        c["end"] = min(c["end"], t1)
+        inside.append(c)
+    if len(inside) < len(norm):
+        print(f"[i] Dropped {len(norm) - len(inside)} clip(s) outside the transcript range", flush=True)
+    uniq: list[dict] = []
+    for c in inside:
+        if all(_overlap_ratio(c, u) < 0.3 for u in uniq):
+            uniq.append(c)
+    # spoilers: drop them only if enough clean clips remain (the AI over-flags this a lot)
+    clean = [c for c in uniq if not c.get("spoiler")]
+    spoilers = len(uniq) - len(clean)
+    if spoilers:
+        if len(clean) >= min(3, max_clips):
+            print(f"[i] Dropped {spoilers} clip(s) flagged as story spoilers", flush=True)
+            uniq = clean
+        else:
+            print(f"[i] {spoilers} clip(s) flagged as spoilers but too few others - keeping them", flush=True)
+    return uniq
+
+
+def _ask_for_clips(prompt: str, transcript: list[dict], max_clips: int) -> list[dict]:
     keys = get_api_keys()
     if not keys:
         print("[!] GEMINI_API_KEY / GEMINI_API_KEYS missing - cannot select clips")
         return []
-    text = ""
-    last_err: Exception | None = None
-    key = next_usable_key() or keys[0]
-    tried: set[str] = set()
-    while key and key not in tried:
-        tried.add(key)
-        try:
-            client = make_client(key)
-            resp = gemini_generate(client, prompt)
-            text = (resp.text or "").strip()
-            break
-        except GeminiQuotaExhausted as e:
-            last_err = e
-            nxt = next_usable_key(key)
-            print(f"[!] {e}" + (f" Switching to {key_label(nxt)}" if nxt else ""), flush=True)
-            key = nxt
-        except Exception as e:
-            last_err = e
-            break
-    if not text:
-        print(f"[!] Gemini API failure: {last_err}")
-        return []
-
-    if "```json" in text:
-        text = text.split("```json")[1].split("```")[0]
-    elif "```" in text:
-        text = text.split("```")[1].split("```")[0]
     try:
-        clips = json.loads(text)
-        valid = [c for c in clips if isinstance(c, dict) and "start" in c and "end" in c]
-        safe = [c for c in valid if not c.get("spoiler")]
-        if len(safe) < len(valid):
-            print(f"[i] Dropped {len(valid) - len(safe)} clip(s) flagged as story spoilers")
-        return safe[:max_clips]
-    except Exception as e:
-        print(f"[!] AI parse failed: {e}")
-        print(f"[!] Raw AI response (first 400 chars): {text[:400]}")
+        from google.genai import types as _t
+        cfg = _t.GenerateContentConfig(response_mime_type="application/json")
+    except Exception:
+        cfg = None
+
+    for attempt in (1, 2):
+        text, last_err = "", None
+        key = next_usable_key() or keys[0]
+        tried: set[str] = set()
+        while key and key not in tried:
+            tried.add(key)
+            try:
+                client = make_client(key)
+                resp = gemini_generate(client, prompt, config=cfg)
+                text = (resp.text or "").strip()
+                break
+            except GeminiQuotaExhausted as e:
+                last_err = e
+                nxt = next_usable_key(key)
+                print(f"[!] {e}" + (f" Switching to {key_label(nxt)}" if nxt else ""), flush=True)
+                key = nxt
+            except Exception as e:
+                last_err = e
+                nxt = next_usable_key(key)
+                if nxt and nxt not in tried:
+                    print(f"[!] {key_label(key)} failed ({type(e).__name__}: {str(e)[:120]}) - trying {key_label(nxt)}", flush=True)
+                    key = nxt
+                    continue
+                break
+        if not text:
+            print(f"[!] Gemini API failure (attempt {attempt}): {type(last_err).__name__}: {str(last_err)[:300]}", flush=True)
+            return []
+        items = parse_json_array(text)
+        if not items:
+            print(f"[!] Could not parse clips from Gemini (attempt {attempt}). Raw response head: {text[:300]!r}", flush=True)
+            prompt += "\n\nIMPORTANT: reply with ONLY a JSON array, no prose, no markdown. Keep each item short."
+            continue
+        clips = _clean_clips(items, transcript, max_clips)
+        if clips:
+            return clips
+        prompt += "\n\nIMPORTANT: use numeric seconds for start/end that exist in the transcript above."
+    return []
+
+
+# --------------------------------------------------------------------------- no-AI fallback
+
+_HYPE = ("bro", "no way", "oh my god", "omg", "wait", "yo ", "bruh", "crazy", "insane", "holy",
+         "help", "run", "police", "cops", "crash", "jump", "let's go", "lets go", "ahh", "aah",
+         "dude", "sheesh", "what the", "are you serious", "legend", "dead", "shoot", "chase")
+
+
+def heuristic_clips(transcript: list[dict], max_clips: int, length: float = 36.0) -> list[dict]:
+    """Pick the most 'energetic' windows using hype words, !, ?, sound notes and speech density."""
+    if not transcript:
         return []
+    t0, t1 = transcript[0]["start"], transcript[-1]["end"]
+    step = 5
+    nbins = int((t1 - t0) // step) + 2
+    bins = [0.0] * nbins
+    for s in transcript:
+        txt = (s.get("text") or "").lower()
+        score = sum(txt.count(h) for h in _HYPE) * 2 + txt.count("!") * 2 + txt.count("?") \
+            + (3 if "[" in txt else 0) + len(txt.split()) / 20
+        bins[min(nbins - 1, int((s["start"] - t0) // step))] += score
+    w = int(length // step)
+    scored = []
+    for i in range(0, max(1, nbins - w)):
+        scored.append((sum(bins[i:i + w]), t0 + i * step))
+    scored.sort(reverse=True)
+    picked: list[dict] = []
+    floor = max(3.0, 0.25 * scored[0][0]) if scored else 0
+    for sc, st in scored:
+        if sc < floor or len(picked) >= max_clips:
+            break
+        start = max(t0, st - 2)
+        end = min(t1, start + length)
+        if end - start < 25:
+            continue
+        if all(abs(start - p["start"]) >= length for p in picked):
+            picked.append({
+                "start": start, "end": end,
+                "title": f"Wild Moment {len(picked) + 1}",
+                "hook": "WAIT FOR IT", "style": "text_story",
+                "reason": f"heuristic score {sc:.0f}", "spoiler": False,
+            })
+    print(f"[i] Heuristic picker chose {len(picked)} clip(s)", flush=True)
+    return picked
 
 
 VOICEOVER_LANGUAGE = os.getenv("VOICEOVER_LANGUAGE", "English")

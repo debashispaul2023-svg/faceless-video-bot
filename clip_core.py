@@ -21,6 +21,7 @@ YDL_BASE = {
     },
     # Let yt-dlp fetch its JS challenge solver (Deno is installed in the workflow)
     "remote_components": ["ejs:github"],
+    "socket_timeout": 30,
     "retries": 3,
     "fragment_retries": 3,
     "sleep_interval": 1,

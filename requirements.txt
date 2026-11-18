@@ -1,13 +1,10 @@
 google-genai
 requests
-tenacity
-edge-tts
-moviepy>=2.0.0
-pillow
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
 google-api-python-client
 pytz
 yt-dlp>=2024.8.0
+faster-whisper>=1.0.0   # word-level karaoke timing (optional but recommended)
 # Host: ffmpeg, Deno (for yt-dlp JS challenges on Actions)

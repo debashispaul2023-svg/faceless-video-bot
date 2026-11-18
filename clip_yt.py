@@ -85,7 +85,16 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
                     dur = ev.get("dDurationMs", 0) / 1000.0
                     text = "".join(s.get("utf8", "") for s in ev.get("segs", [])).strip()
                     if text:
-                        segments.append({"start": start, "end": start + dur, "text": text})
+                        # keep per-word offsets (auto captions have them) for karaoke timing
+                        words = []
+                        for sg in ev.get("segs", []):
+                            w = (sg.get("utf8") or "").strip()
+                            if w:
+                                words.append({"w": w, "start": start + sg.get("tOffsetMs", 0) / 1000.0})
+                        for k, w in enumerate(words):
+                            w["end"] = words[k + 1]["start"] if k + 1 < len(words) else start + dur
+                        segments.append({"start": start, "end": start + dur, "text": text,
+                                         "words": words if len(words) > 1 else None})
             except Exception as e:
                 print(f"[!] Failed parsing subtitle file {p.name}: {e}")
         return segments
@@ -96,7 +105,8 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
 AUDIO_CHUNK_SEC = 1200  # fewer, longer chunks = fewer API calls (free tier is request-limited)
 
 
-MAX_AUDIO_MINUTES = int(os.getenv("MAX_AUDIO_MINUTES", "240"))
+MAX_AUDIO_MINUTES = int(os.getenv("MAX_AUDIO_MINUTES", "90"))   # only transcribe the first N minutes (no-caption streams)
+AUDIO_BUDGET_SEC = int(os.getenv("CLIP_AUDIO_BUDGET_MIN", "25")) * 60  # hard stop for the whole audio-transcription step
 
 
 def _parse_json_array(text: str) -> list:
@@ -191,7 +201,13 @@ def transcribe_audio_with_gemini(url: str, workdir: Path) -> list[dict]:
         json_cfg = _gtypes.GenerateContentConfig(response_mime_type="application/json")
     except Exception:
         json_cfg = None
+    t_audio0 = time.time()
     for idx, chunk in enumerate(chunks):
+        if time.time() - t_audio0 > AUDIO_BUDGET_SEC:
+            print(f"[!] Audio transcription budget ({AUDIO_BUDGET_SEC // 60} min) used up - continuing with {len(segments)} segments", flush=True)
+            for c in chunks[idx:]:
+                c.unlink(missing_ok=True)
+            break
         offset = idx * AUDIO_CHUNK_SEC
         for attempt in range(3 + len(keys)):  # extra attempts so a key switch is not "wasted"
             try:
@@ -252,6 +268,7 @@ def download_segment(url: str, start: float, end: float, out_path: Path) -> bool
             format="bestvideo[height<=1080]+bestaudio/best",
             outtmpl=str(out_path.with_suffix("")),
             download_sections=[section],
+            force_keyframes_at_cuts=True,   # frame-accurate cut start/end
             merge_output_format="mp4",
         )
         with yt_dlp.YoutubeDL(opts) as ydl:
