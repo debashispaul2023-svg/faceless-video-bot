@@ -96,7 +96,7 @@ jobs:
           YOUTUBE_COOKIES_FILE: cookies.txt
           # GITHUB_* provided by Actions for diagnostic email run URL
           CLIP_CHANNELS: ${{ vars.CLIP_CHANNELS || '@IShowSpeed,@MrBeast' }}
-          CLIP_TITLE_KEYWORDS: ${{ vars.CLIP_TITLE_KEYWORDS || 'gta' }}
+          CLIP_TITLE_KEYWORDS: ${{ vars.CLIP_TITLE_KEYWORDS || 'gta,grand theft auto' }}
           CLIP_LAYOUT: ${{ vars.CLIP_LAYOUT || 'blur' }}
           # workflow inputs go through env (never interpolated into the shell script)
           INPUT_MODE: ${{ github.event.inputs.mode }}
