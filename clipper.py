@@ -28,6 +28,8 @@ from clip_yt import download_segment, download_transcript, get_video_id, transcr
 
 VOICEOVER_ENABLED = os.getenv("CLIP_VOICEOVER", "0") == "1"   # narrator needs ElevenLabs keys
 TIME_BUDGET_SEC = int(os.getenv("CLIP_TIME_BUDGET_MIN", "80")) * 60   # stop making new clips after this
+MAX_UPLOADS_PER_RUN = int(os.getenv("CLIP_MAX_UPLOADS_PER_RUN", "4"))  # YouTube API quota: ~1,600 units per upload (10,000/day)
+_LAST_SCHEDULED = 0   # how many clips the last process_url() really scheduled on YouTube
 MIN_LEN, MAX_LEN = 30.0, 40.0                                  # target Short length (seconds)
 
 
@@ -44,6 +46,8 @@ def _fit_length(start: float, end: float) -> tuple[float, float]:
 def process_url(url: str, max_clips: int = 10, schedule: bool = True,
                 video_title: str = "stream", streamer: str = "") -> list[Path]:
     """Clip a stream/VOD into Shorts. Fail fast on auth/429. Preserve outputs on upload errors."""
+    global _LAST_SCHEDULED
+    _LAST_SCHEDULED = 0
     t0 = time.time()
     print(f"[+] yt-dlp version: {yt_dlp.version.__version__}")
     vid = get_video_id(url)
@@ -158,6 +162,7 @@ def process_url(url: str, max_clips: int = 10, schedule: bool = True,
                 day, hour, minute = slots.pop(0)
                 print(f"[+] Scheduling clip {i} → day+{day} at {hour:02d}:{minute:02d} IST")
                 schedule_video_upload(final, meta, hour, minute, day_offset=day)
+                _LAST_SCHEDULED += 1
             except Exception as e:
                 print(f"[!] Upload/schedule failed (clip file preserved): {e}")
 
@@ -189,6 +194,10 @@ def run_auto(upload: bool = True, max_clips: int | None = None) -> int:
     else:
         need = 3
     want = max_clips or need
+    if upload and want > MAX_UPLOADS_PER_RUN:
+        print(f"[i] Capping this run at {MAX_UPLOADS_PER_RUN} upload(s) (YouTube API quota); "
+              f"the queue is topped up over the next daily runs", flush=True)
+        want = MAX_UPLOADS_PER_RUN
 
     stream = find_next_stream()
     if not stream:
@@ -196,10 +205,15 @@ def run_auto(upload: bool = True, max_clips: int | None = None) -> int:
         return 0
     out = process_url(stream["url"], max_clips=min(want, 10), schedule=upload,
                       video_title=stream["title"], streamer=stream["channel"])
-    if out:
+    if not out:
+        return 1
+    # Only burn the stream when its clips were really scheduled. Test runs (upload off) and
+    # runs where every upload failed (quota/OAuth) leave it available for the next run.
+    if upload and _LAST_SCHEDULED > 0:
         mark_processed(stream["id"])
-        return 0
-    return 1
+    else:
+        print("[i] Stream NOT marked as processed (no clip was scheduled on YouTube this run)", flush=True)
+    return 0
 
 
 if __name__ == "__main__":
