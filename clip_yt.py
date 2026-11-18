@@ -49,7 +49,8 @@ def download_transcript(url: str, workdir: Path) -> list[dict]:
         lang = info.get("language")
         if lang:
             prefs = [lang, f"{lang}-orig"] + prefs
-        pool = manual + [a for a in auto if a not in manual]
+        # "live_chat" is the chat replay, not a transcript: downloading it takes ages and gives no captions
+        pool = [x for x in manual + [a for a in auto if a not in manual] if x != "live_chat"]
         chosen = [p for p in prefs if p in pool]
         # any "-orig" track = the video's spoken language
         chosen += [a for a in auto if a.endswith("-orig") and a not in chosen]
@@ -291,3 +292,4 @@ def download_segment(url: str, start: float, end: float, out_path: Path) -> bool
     except Exception as e:
         print(f"[!] Segment download failed: {e}")
         return False
+            
