@@ -31,7 +31,11 @@ def _channels() -> list[str]:
 
 
 def _keywords() -> list[str]:
-    raw = os.getenv("CLIP_TITLE_KEYWORDS", "gta")
+    raw = os.getenv("CLIP_TITLE_KEYWORDS", "gta,grand theft auto")
+    # "*" / "any" / "all" = no title filter (an EMPTY GitHub variable falls back to the default,
+    # so use "*" in the workflow variable when you want to accept every stream).
+    if raw.strip().lower() in ("*", "any", "all"):
+        return []
     return [k.strip().lower() for k in raw.split(",") if k.strip()]
 
 
